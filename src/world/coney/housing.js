@@ -13,6 +13,7 @@ import { OSM, PLAY } from './osm.js';
 import { footprintAngle, cen, bbox, pip, segDist } from '../osmkit.js';
 import { leafTexture, barkTexture } from '../wsp/textures.js';
 import { planYard, buildYard } from './lunayard.js';
+import { STREET_NAMES } from './streetnames.js';
 
 const ST = 2.62;        // storey height (m)
 const PAR = 0.9;        // parapet above the top floor slab
@@ -20,6 +21,8 @@ const TILE_BAYS = 2, TILE_FLOORS = 4;
 const SILL = 0.85, WIN_H = 1.5, WIN_W = 1.12, WIN_AT = [0.28, 0.72];   // window layout inside one bay (fractions of the bay)
 const GAL = 1.7;        // lobby glass / 19th-floor vestibule line on the core faces (hangout geometry keys off this)
 const GALV = 2.5;       // visual gallery recess: dark back wall + slabs run this deep so the core self-shadows (critic r9 #2)
+const PASS_W = 4.8, PASS_EDGE = 0.5;   // street passage through the base of one main wing: clear width, outer wall left standing
+const LOBBY_STREETS = /^(W 12 St|W 8 St|Surf Av|Neptune Av)$/;   // the streets round the superblock a tower's third entrance faces
 const DOOR_HALF = 2.4, LOBBY_HALF = 7, WALK_HALF = 8.3, GROUND_HI = 13;   // DOOR_HALF: half-width of the open breezeway through the core on both gallery faces (no doors, lines up with the canopy posts) · GROUND_HI: the ground-floor lobby runs from the elevator wall (mid − LOBBY_HALF) to mid + 13 · WALK_HALF: 19th-floor walkway half-length
 
 /** The five Luna Park Houses towers in OSM.b (tall 'tower' style buildings north of the avenue, x 60..380, z -520..-110). */
@@ -376,6 +379,7 @@ function buildAll(world, M) {
       let ent = p.entrance; if (ent && spineX) ent = { s0: 'x0', s1: 'x1', t0: 'z0', t1: 'z1' }[ent]; else if (ent) ent = { s0: 'z0', s1: 'z1', t0: 'x0', t1: 'x1' }[ent];
       return { ...q, floors: p.floors, kind: p.kind, main: !!p.main, entrance: ent, top: p.floors * ST + PAR, galleryAxis: spineX ? 'x' : 'z' };
     });
+    streetPassage(parts, m);
     const L = new Local();
     const core = buildTower(L, parts, R, acs, m);
     if (core) (world.lunaTowers || (world.lunaTowers = [])).push(towerInfo(core, m, [ox, oz]));
@@ -461,13 +465,17 @@ function buildTower(L, parts, R, acs, m) {
       // entrance door on this face?
       let door = null;
       if (p.entrance === f.id || (isGallery)) { const mid = (f.a0 + f.a1) / 2; door = { a0: mid - 1.6, a1: mid + 1.6 }; }
-      const cuts = new Set([f.a0, f.a1]); for (const [lo, hi] of cov) { cuts.add(lo); cuts.add(hi); }
+      // the street passage pierces both end faces of its wing at ground level (no door: it is open, like the breezeway)
+      const hole = p.passage && f.axis !== p.galleryAxis ? p.passage : null;
+      if (hole && door) door = { a0: hole.c0, a1: hole.c1, open: true };
+      const cuts = new Set([f.a0, f.a1]); for (const [lo, hi] of cov) { cuts.add(lo); cuts.add(hi); } if (hole) { cuts.add(hole.c0); cuts.add(hole.c1); }
       if (strip) { cuts.add(strip.a0); cuts.add(strip.a1); }
       const xs = [...cuts].filter((v) => v >= f.a0 - 1e-6 && v <= f.a1 + 1e-6).sort((a, b) => a - b);
       // gallery: visible runs (for recess side walls)
       for (let i = 0; i + 1 < xs.length; i++) {
         const a = xs[i], bnd = xs[i + 1]; if (bnd - a < 0.02) continue; const mid = (a + bnd) / 2;
         let yb = 0; for (const [lo, hi, top] of cov) if (mid > lo && mid < hi) yb = Math.max(yb, top);
+        if (hole && mid > hole.c0 && mid < hole.c1) yb = Math.max(yb, ST);   // the passage mouth: facade starts above it
         if (yb >= Ht - 0.01) continue;
         if (isGallery) {
           const yg = Math.max(yb, 0);
@@ -538,7 +546,8 @@ function buildTower(L, parts, R, acs, m) {
           }
         }
       }
-      if (door && !isGallery) {
+      if (door && !isGallery && door.open) canopy(L, f, P, (door.a0 + door.a1) / 2, 0);
+      else if (door && !isGallery) {
         const dA = door.a0, dB = door.a1; rect('hDoor', f, dA, dB, 0, 2.7, 0.03, bw);
         for (const aa of [dA, dB]) { const mn = P(f, aa - 0.08, 0, 0), mx = P(f, aa + 0.08, 2.85, 0.12); L.box('hRail', [Math.min(mn[0], mx[0]), 0, Math.min(mn[2], mx[2])], [Math.max(mn[0], mx[0]), 2.85, Math.max(mn[2], mx[2])], { collide: false }); }
         const t0 = P(f, dA - 0.08, 2.7, 0), t1 = P(f, dB + 0.08, 2.85, 0.12); L.box('hRail', [Math.min(t0[0], t1[0]), 2.7, Math.min(t0[2], t1[2])], [Math.max(t0[0], t1[0]), 2.85, Math.max(t0[2], t1[2])], { collide: false });
@@ -547,7 +556,7 @@ function buildTower(L, parts, R, acs, m) {
     }
     // roof: deck, dark coping, guard railing (skipping edges against taller neighbours), bulkheads
     if (p.kind !== 'core') L.box('hRoof', [p.x0, Ht - 0.12, p.z0], [p.x1, Ht - 0.02, p.z1], { collide: false });   // the core's deck has the stair opening (coreInterior)
-    if (p.kind === 'core') core = coreInterior(L, p, Ht); else L.collide([p.x0, 0, p.z0], [p.x1, Ht, p.z1]);
+    if (p.kind === 'core') core = coreInterior(L, p, Ht); else if (p.passage) passageInterior(L, p, Ht); else L.collide([p.x0, 0, p.z0], [p.x1, Ht, p.z1]);
     const cp = 0.07;
     for (const [mn, mx] of [[[p.x0 - cp, Ht - 0.22, p.z0 - cp], [p.x1 + cp, Ht, p.z0 + 0.25]], [[p.x0 - cp, Ht - 0.22, p.z1 - 0.25], [p.x1 + cp, Ht, p.z1 + cp]], [[p.x0 - cp, Ht - 0.22, p.z0], [p.x0 + 0.25, Ht, p.z1]], [[p.x1 - 0.25, Ht - 0.22, p.z0], [p.x1 + cp, Ht, p.z1]]]) L.box('hRail', mn, mx, { collide: false });
     for (const f of facesOf(p)) {
@@ -579,9 +588,44 @@ function buildTower(L, parts, R, acs, m) {
       if (R() < 0.6) L.box('hCreamPlain', [bx + 3.5, Ht - 0.1, bz - 1], [bx + 5.3, Ht + 2.2, bz + 1], { uvScale: 1 / 9.6 });
     }
   }
+  if (core) core.street = parts.find((p) => p.passage)?.passage || null;   // towerInfo: the third (street) entrance
   return core;
 }
 const H0 = (parts) => Math.max(...parts.map((p) => p.floors));
+
+/** the lobby's third entrance: of the two main wings (each with an entrance on its outer end), the one whose end is nearest a
+ *  street round the superblock gets a ground-floor passage through its base, on the side that stands proud of the core, so it
+ *  comes out by the core face and its breezeway. Sets p.passage (local): along-axis range a0..a1, cross range c0..c1, the
+ *  outward direction dir, the inner (core-side) end, and the length of the walk back along the core face to the breezeway. */
+function streetPassage(parts, m) {
+  const core = parts.find((p) => p.kind === 'core'); if (!core) return;
+  const ax = core.galleryAxis, along = (p) => ax === 'x' ? [p.x0, p.x1] : [p.z0, p.z1], cross = (p) => ax === 'x' ? [p.z0, p.z1] : [p.x0, p.x1];
+  const streets = STREET_NAMES.filter((q) => LOBBY_STREETS.test(q.n)).map((q) => q.p), v = new THREE.Vector3();
+  let best = null, bestD = Infinity;
+  for (const p of parts) { if (!p.main || !p.entrance) continue; const f = facesOf(p).find((g) => g.id === p.entrance);
+    v.set(...(f.axis === 'z' ? [f.c, 0, (f.a0 + f.a1) / 2] : [(f.a0 + f.a1) / 2, 0, f.c])).applyMatrix4(m);
+    const d = Math.min(...streets.map((q) => segDist(v.x, v.z, q))); if (d < bestD) { bestD = d; best = p; } }
+  if (!best) return;
+  const [a0, a1] = along(best), [w0, w1] = cross(best), [k0, k1] = cross(core), dir = (a0 + a1) / 2 > (along(core)[0] + along(core)[1]) / 2 ? 1 : -1;
+  const low = k0 - w0 > w1 - k1, c0 = low ? w0 + PASS_EDGE : w1 - PASS_EDGE - PASS_W, inner = dir > 0 ? a0 : a1, mid = (along(core)[0] + along(core)[1]) / 2;
+  best.passage = { a0, a1, c0, c1: c0 + PASS_W, dir, inner, outer: dir > 0 ? a1 : a0, walk: Math.abs(inner - mid) + 4 };
+}
+
+/** colliders for a wing with the street passage (solid above the ground floor and on both sides of the passage) + the lobby
+ *  finishes inside it: VCT with brown inlays, glazed-brick walls, dropped ceiling with light panels, a conduit */
+function passageInterior(L, p, Ht) {
+  const q = p.passage, X = p.galleryAxis === 'x', P3 = (a, y, c) => X ? [a, y, c] : [c, y, a];
+  const bx = (a0, y0, c0, a1, y1, c1) => { const u = P3(a0, y0, c0), w = P3(a1, y1, c1); return [[Math.min(u[0], w[0]), y0, Math.min(u[2], w[2])], [Math.max(u[0], w[0]), y1, Math.max(u[2], w[2])]]; };
+  const col = (cell, ...v) => { const [mn, mx] = bx(...v); L.collide(mn, mx, cell); }, vis = (key, ...v) => { const [mn, mx] = bx(...v); L.box(key, mn, mx, { collide: false }); };
+  const [w0, w1] = X ? [p.z0, p.z1] : [p.x0, p.x1], cm = (q.c0 + q.c1) / 2;
+  col(undefined, q.a0, ST, w0, q.a1, Ht, w1);                                     // everything above the passage
+  col(0.5, q.a0, 0, w0, q.a1, ST, q.c0); col(0.5, q.a0, 0, q.c1, q.a1, ST, w1);    // its two side walls (fine cells: rotated towers bulge coarse ones into the passage)
+  vis('hLobbyFloor', q.a0, 0, q.c0, q.a1, 0.03, q.c1); vis('hLobbyCeiling', q.a0, ST - 0.07, q.c0, q.a1, ST - 0.04, q.c1);
+  for (const c of [q.c0, q.c1]) vis('hLobbyWall', q.a0, 0, c - 0.03, q.a1, ST, c + 0.03);
+  for (let a = q.a0 + 1.5; a < q.a1 - 1; a += 3) { vis('hLobbyCeil', a - 0.6, ST - 0.1, cm - 0.3, a + 0.6, ST - 0.075, cm + 0.3); vis('hInlay', a - 0.3, 0.03, cm - 0.3, a + 0.3, 0.034, cm + 0.3); }
+  { const c = q.c0 + 0.1, a = (q.a0 + q.a1) / 2; vis('hConduit', a - 0.03, 0, c - 0.03, a + 0.03, ST - 0.1, c + 0.03); vis('hPanel', a - 0.15, 2.0, c - 0.08, a + 0.15, 2.3, c + 0.12); }
+  vis('hGreenDoor', (q.a0 + q.a1) / 2 + 3, 0.01, q.c1 - 0.05, (q.a0 + q.a1) / 2 + 3.95, 2.1, q.c1 - 0.02);   // a service door off the passage
+}
 
 /** vertical lobby-glass mullion at along-position a (offset o), y0..y1 */
 function mullion(L, f, P, a, o, y0, y1, w = 0.05) {
@@ -615,10 +659,12 @@ function grounds(G, B, world, M, parts, m, ang, [ox, oz], [cx, cz], trees, other
   // entrance path lines (local): from each door straight out
   const paths = [];
   for (const p of parts) {
-    if (p.entrance) { const f = facesOf(p).find((f) => f.id === p.entrance); paths.push({ axis: f.axis, a: (f.a0 + f.a1) / 2, c: f.c, dirn: f.axis === 'z' ? f.n[0] : f.n[1] }); }
+    if (p.entrance) { const f = facesOf(p).find((f) => f.id === p.entrance), q = p.passage; paths.push({ axis: f.axis, a: q ? (q.c0 + q.c1) / 2 : (f.a0 + f.a1) / 2, c: f.c, dirn: f.axis === 'z' ? f.n[0] : f.n[1], w: q ? PASS_W / 2 + 0.6 : 1.8 }); }
+    // the walk from the passage's inner mouth along the core face to the breezeway (a = inner end back to the core's middle)
+    if (p.passage) { const q = p.passage; paths.push({ axis: p.galleryAxis === 'x' ? 'z' : 'x', a: (q.c0 + q.c1) / 2, c: q.inner, dirn: -q.dir, w: PASS_W / 2 + 0.4, len: q.walk }); }
     if (p.kind === 'core') for (const f of facesOf(p)) if (f.axis === p.galleryAxis) paths.push({ axis: f.axis, a: (f.a0 + f.a1) / 2, c: f.c, dirn: f.axis === 'z' ? f.n[0] : f.n[1] });
   }
-  const onPath = (lx, lz) => paths.some((q) => { const along = q.axis === 'z' ? lz : lx, perp = q.axis === 'z' ? lx : lz; return Math.abs(along - q.a) < 1.8 && (perp - q.c) * q.dirn > -1; });
+  const onPath = (lx, lz) => paths.some((q) => { const along = q.axis === 'z' ? lz : lx, perp = q.axis === 'z' ? lx : lz; const d = (perp - q.c) * q.dirn; return Math.abs(along - q.a) < (q.w ?? 1.8) && d > -1 && (!q.len || d < q.len); });
   const lawn = new Uint8Array(nx * nz);
   for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
     const lx = x0 + (i + 0.5) * CELL, lz = z0 + (j + 0.5) * CELL;
@@ -720,7 +766,7 @@ function mergeSimple(list) {
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // Hangout interior (coney/hangout.js): the core's ground floor becomes a lobby with an open breezeway straight through it
-// (both gallery faces, no doors), with a bank of 3 brushed-steel elevators on one end wall and mailboxes on the other; the open
+// (both gallery faces, no doors; the third, street entrance is a passage through a wing: streetPassage), with a bank of 3 brushed-steel elevators on one end wall and mailboxes on the other; the open
 // gallery recess on the 19th floor becomes a railed walkway (both faces) with 3 elevator doors on its back wall. Everything
 // else in the core stays solid. Local frame: a = along the core spine, c = across it, P3 maps (a, y, c) to local (x, y, z).
 function coreInterior(L, p, Ht) {
@@ -904,7 +950,12 @@ function towerInfo(core, m, centre) {
   const toWorld = (a, y, c) => new THREE.Vector3(...P3(a, y, c)).applyMatrix4(m);
   const o = toWorld(0, 0, 0), ea = toWorld(1, 0, 0).sub(o), ec = toWorld(0, 0, 1).sub(o);   // world directions of +a and +c
   const yawOf = (d) => Math.atan2(-d.x, -d.z);   // camera yaw that looks along direction d
+  // the street entrance (passage through a wing, then along the core face into the breezeway): QA walking route + ends
+  const sp = core.street, street = sp && (() => { const low = sp.c0 + sp.c1 < core.C[0] + core.C[1], fc = (low ? core.C[0] : core.C[1]) + (low ? -1.2 : 1.2), pcm = (sp.c0 + sp.c1) / 2;
+    const route = [[sp.outer + sp.dir * 4, pcm], [sp.inner - sp.dir * 2, pcm], [core.mid + sp.dir * 4, fc], [core.mid, fc], [core.mid, low ? core.i0 + 1.2 : core.i1 - 1.2]].map(([a, c]) => toWorld(a, 0, c));
+    return { outside: route[0], inside: route[route.length - 1], route, yawIn: yawOf(ea.clone().multiplyScalar(-sp.dir)) }; })();
   const lobby = {
+    street,
     // stand in front of each elevator door, facing it
     cars: core.cars.map((cc) => ({ pos: toWorld(core.mid - core.lobbyHalf + 1.1, 0, cc), yaw: yawOf(ea.clone().negate()) })),
     doors: [core.i0, core.i1].map((c, k) => ({ inside: toWorld(core.mid, 0, c + (k ? -1.2 : 1.2)), outside: toWorld(core.mid, 0, c + (k ? 1 : -1) * (GAL + 5)), yawIn: yawOf(ec.clone().multiplyScalar(k ? -1 : 1)), plane: toWorld(core.mid, 0, c), along: ea.clone().normalize(), half: core.doorHalf, open: true })),   // open: the breezeway has no doors (hangout.js skips its sliding leaves)
