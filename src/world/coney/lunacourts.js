@@ -84,13 +84,13 @@ export function buildLunaCourts(world, M) {
       const L = p.s1 - p.s0, D = p.t1 - p.t0, tm = (p.t0 + p.t1) / 2;
       flat(G2, kind === 'basketball' ? 'lcBasket' : 'lcPickle', F, p.s0, p.t0, p.s1, p.t1, COURT_Y, [0, 0, 1, 1]);
       if (kind === 'basketball') for (const e of [-1, 1]) {   // a hoop at each end: pole outside the baseline, arm, backboard, orange rim, net
-        const base = e < 0 ? p.s0 : p.s1, pole = base - e * 1.0, board = base + e * 1.2;
+        const base = e < 0 ? p.s0 : p.s1, pole = base + e * 1.0, board = base - e * 1.2;   // e: the end's outward sign (pole behind the baseline, board over the court)
         ocyl('steelDark', F, pole, tm, 0, 3.55, 0.09, 10); solid(F, pole - 0.15, tm - 0.15, pole + 0.15, tm + 0.15, 3.5, 0.3);
         obox('steelDark', F, (pole + board) / 2, 3.45, tm, Math.abs(board - pole), 0.1, 0.1);
         obox('white', F, board, 3.45, tm, 0.05, 1.05, 1.8);
-        obox('steelOrange', F, board + e * 0.03, 3.25, tm, 0.02, 0.45, 0.59);   // the shooter's square (painted box)
-        { const r = new THREE.TorusGeometry(0.23, 0.012, 4, 16); r.rotateX(Math.PI / 2); const [x, z] = F.P(board + e * 0.28, tm); r.translate(x, 3.05, z); S.add('steelOrange', r); }
-        { const n = new THREE.CylinderGeometry(0.23, 0.15, 0.42, 10, 1, true); const [x, z] = F.P(board + e * 0.28, tm); n.translate(x, 2.84, z); S.add('lcNet', n, { uv: false }); }
+        obox('steelOrange', F, board - e * 0.03, 3.25, tm, 0.02, 0.45, 0.59);   // the shooter's square (painted box)
+        { const r = new THREE.TorusGeometry(0.23, 0.012, 4, 16); r.rotateX(Math.PI / 2); const [x, z] = F.P(board - e * 0.28, tm); r.translate(x, 3.05, z); S.add('steelOrange', r); }
+        { const n = new THREE.CylinderGeometry(0.23, 0.15, 0.42, 10, 1, true); const [x, z] = F.P(board - e * 0.28, tm); n.translate(x, 2.84, z); S.add('lcNet', n, { uv: false }); }
       } else {   // net across the middle of each court: posts outside the sidelines, mesh band, white tape
         const sm = (p.s0 + p.s1) / 2;
         for (const e of [-1, 1]) { ocyl('steelDark', F, sm, tm + e * (D / 2 + 0.3), 0, 0.95, 0.04, 6); }
