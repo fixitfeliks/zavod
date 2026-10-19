@@ -1,9 +1,9 @@
 // CONEY: Uber (chill mode). The 📱 in your bag (U, the bag's OPEN, or the VR tablet's UBER tab) opens the app: pick Table Park, the
 // Bay Ridge ferry, Soc Tav, Brighton or the Steeplechase pier, pay $5, and a black Toyota Camry (the carkit sedan) with a Russian or
 // Chinese driver comes to you along the road graph (coney traffic's lanes; 8th Ave by Soc Tav; Brighton Beach Ave) to the nearest
-// kerb; you walk the last few metres and F gets in. Up to 3 humans ride: the one who booked sits up front, friends hop in the back
-// (F at the car while it waits; it leaves a few seconds after the booker gets in). The ride is on the wall clock from the booker's
-// route (everyone's copy of the car is in the same place at the same moment), long hops off the map (Coney <-> Bay Ridge, Brighton)
+// kerb; you walk the last few metres and F gets in. Up to 3 humans ride: the one who booked sits in the back behind the front
+// passenger, like a real Uber; friends take the other rear seat, then the front (F at the car while it waits; it leaves a few
+// seconds after the booker gets in). The ride is on the wall clock from the booker's route (everyone's copy of the car is in the same place at the same moment), long hops off the map (Coney <-> Bay Ridge, Brighton)
 // fade over the gap like the ferry / tavern arrive(). In the car: seated eye height, mouse look, B drinks / smokes, guns shoot out of
 // the windows, Luna Park Radio plays (radio.js: mounted.passenger). A small phone card shows the driver, the ETA and distance and a
 // turn-by-turn mini map (one 200 px canvas, also drawn onto the VR tablet). Nothing is built until the first request. CONEY agent.
@@ -24,8 +24,12 @@ const DEPART = 4, WAIT_MAX = 150, DROP_HOLD = 1.2, LEAVE_T = 7;       // s: afte
 const BOARD_R = 3.6, SPEED_STILL = 0.4, FEET_Y = 0.3;                   // F reach to the car; getting out only below this speed; your feet over the car's floor
 const BLACK = 0x0c0c0d, MAP_PX = 200, UI_HZ = 5, CLOTH_PX = 128, CLOTH_GLOW = 0.18;
 const SED = carSpec('sedan'), EYE = carEye('sedan');
-// seats in the kit frame (x forward, z right): 0 front passenger (the booker), 1 rear right, 2 rear left. y: eye height over the road
-const SEATS = [{ x: EYE.x, z: -EYE.z, eye: EYE.y }, { x: -1.12, z: 0.5, eye: 1.08 }, { x: -1.12, z: -0.5, eye: 1.08 }];   // the back row as far back as the sloped roof allows (legroom behind the front seats)
+// seats in the kit frame (x forward, z right): 0 front passenger, 1 rear right (the booker's, behind the front passenger), 2 rear left. y: eye height over the road
+// the front passenger seat slides PAX_FWD forward (as Uber drivers do for a rider behind it): legroom and a view past it for the booker
+const PAX_FWD = 0.2, REAR_EYE = 1.12;   // m; the rear eye ~9 cm under the sloped roof's liner
+const PAX_BACK_H = 0.7, PAX_REST_H = 0.18, PAX_BACK_K = 0.72, PAX_LOW = PAX_BACK_H * (1 - PAX_BACK_K);   // carInterior's seat back / headrest heights; the back cut to 72 %, its top (and the headrest on it) PAX_LOW lower
+const SEATS = [{ x: EYE.x + PAX_FWD, z: -EYE.z, eye: EYE.y }, { x: -1.12, z: 0.5, eye: REAR_EYE }, { x: -1.12, z: -0.5, eye: REAR_EYE }];   // the back row as far back as the sloped roof allows
+const BOOKER_ORDER = [1, 2, 0], FRIEND_ORDER = [2, 0, 1];   // the booker rides rear right; friends leave it free for them: rear left, then up front
 const DRIVERS = [['Dmitri', 'ru'], ['Sergei', 'ru'], ['Anatoly', 'ru'], ['Oksana', 'ru'], ['Wei', 'cn'], ['Jun', 'cn'], ['Li Na', 'cn'], ['Zhang', 'cn']];
 const HOPS = { 'coney>tav': ['BELT PKWY', 'GOWANUS EXPWY · EXIT 7B', '8 AV · SUNSET PARK'], 'coney>ferry': ['BELT PKWY', 'SHORE PKWY', '69 ST · BAY RIDGE FERRY'],
   'tav>coney': ['8 AV', 'GOWANUS EXPWY · BELT PKWY', 'CONEY ISLAND'], 'tav>ferry': ['8 AV', '69 ST · BAY RIDGE FERRY'], 'coney>bri': ['SURF AVE · OCEAN PKWY', 'BRIGHTON BEACH AVE'],
@@ -266,8 +270,11 @@ function template() {
   const body = new THREE.Group(); body.name = 'uberBody'; body.rotation.y = Math.PI / 2;
   for (const [slot, g] of Object.entries(G)) { if (!g || !CM[slot]) continue; const m = new THREE.Mesh(g, slot === 'paint' ? paint : slot === 'glass' ? (CM.glassSee || CM.glass) : CM[slot]); m.castShadow = slot === 'paint' && !U.ctx.lite; m.userData.surface = 'metal'; body.add(m); }
   const cab = carInterior('sedan', G); body.add(cab.group); cab.wheel.name = 'uberWheel';
+  // the front passenger seat, slid up, its back and headrest set low: the booker sees the road over it, not a wall at the nose
+  for (const o of cab.group.children) if (o.material === cab.seatMat && Math.abs(o.position.z + EYE.z) < 0.01) { o.position.x += PAX_FWD; const hgt = o.geometry.parameters?.height;
+    if (hgt === PAX_BACK_H) { o.scale.y = PAX_BACK_K; o.position.y -= PAX_LOW / 2; } else if (hgt === PAX_REST_H) o.position.y -= PAX_LOW; }
   // the sedan's cabin has no rear bench (it sits behind its fast backlight): ours does, ahead of the rear axle where the back seats sit
-  const seatMat = cab.group.children.find((o) => o.material?.color?.getHex?.() === 0x3b3029)?.material || CM.trim, rx = SEATS[1].x;
+  const seatMat = cab.seatMat, rx = SEATS[1].x;
   const bench = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.14, SED.w * 0.76), seatMat); bench.position.set(rx - 0.02, SED.clr + 0.3, 0); cab.group.add(bench);
   const back = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, SED.w * 0.76), seatMat); back.position.set(rx - 0.33, SED.clr + 0.6, 0); back.rotation.z = 0.24; cab.group.add(back); bench.name = back.name = 'uberBench';
   U.tpl = body; return body;
@@ -285,7 +292,7 @@ function rearCabin() {
   const parts = { cloth: [], dark: [], carpet: [], silver: [], tab: [] };
   const box = (slot, w, h, d, x, y, z, rz = 0, rx = 0) => { const g = new THREE.BoxGeometry(w, h, d); if (rx) g.rotateX(rx); if (rz) g.rotateZ(rz); g.translate(x, y, z); parts[slot].push(g); };
   const rx = SEATS[1].x + 0.1, y0 = SED.clr, HW = SED.w / 2;   // the cushion a little ahead of the rider's eye (hips under it, back behind)
-  for (const s of [1, -1]) { const z = s * 0.36;
+  for (const s of [1, -1]) { const z = s * 0.36, fx = s > 0 ? PAX_FWD : 0, low = s > 0 ? PAX_LOW : 0;   // the passenger side's seat is slid up and its back cut down
     box('cloth', 0.5, 0.12, 0.44, rx - 0.02, y0 + 0.33, z);                                               // cushion
     for (const e of [0.21, -0.21]) box('cloth', 0.46, 0.06, 0.06, rx - 0.02, y0 + 0.41, z + e);          // its contour rolls
     box('cloth', 0.12, 0.56, 0.42, rx - 0.33, y0 + 0.68, z, 0.24);                                         // back
@@ -293,9 +300,9 @@ function rearCabin() {
     box('cloth', 0.1, 0.15, 0.24, rx - 0.44, y0 + 1.06, z, 0.24);                                          // headrest
     box('dark', 0.012, 0.62, 0.05, rx - 0.25, y0 + 0.74, s * 0.6, 0.24, s * 0.55);                         // belt across the shoulder
     box('tab', 0.03, 0.06, 0.03, rx - 0.22, y0 + 0.42, s * 0.14);                                          // buckle tab
-    box('dark', 0.04, 0.48, 0.44, EYE.x - 0.45, y0 + 0.66, z, 0.2);                                        // the front seat's back
-    box('dark', 0.03, 0.2, 0.38, EYE.x - 0.5, y0 + 0.5, z, 0.2);                                           // its map pocket
-    box('carpet', 0.36, 0.012, 0.42, EYE.x - 0.62, y0 + 0.07, z);                                          // floor mat
+    box('dark', 0.04, 0.48 - low, 0.44, EYE.x - 0.45 + fx, y0 + 0.66 - low / 2, z, 0.2);                                        // the front seat's back
+    box('cloth', 0.03, 0.2, 0.38, EYE.x - 0.5 + fx, y0 + 0.5, z, 0.2); box('dark', 0.035, 0.02, 0.38, EYE.x - 0.48 + fx, y0 + 0.6, z, 0.2);   // its map pocket (cloth, an elastic hem on top)
+    box('carpet', 0.36 + fx, 0.012, 0.42, EYE.x - 0.62 + fx / 2, y0 + 0.07, z);                                          // floor mat
     box('dark', 0.8, 0.48, 0.035, rx - 0.1, y0 + 0.62, s * (HW - 0.13));                                   // door card
     box('dark', 0.42, 0.05, 0.09, rx + 0.02, y0 + 0.58, s * (HW - 0.18));                                  // armrest
     box('silver', 0.12, 0.025, 0.02, rx + 0.25, y0 + 0.78, s * (HW - 0.16)); }                            // door handle
@@ -355,7 +362,7 @@ function boardable() {
 function boardDist(p) { const r = boardable(); return r ? Math.hypot(r.st.x - p.x, r.st.z - p.z) - 1.2 : Infinity; }
 function board(r, want = -1) {
   const { ctx } = U, p = ctx.player, me = ctx.net?.id || 'me', mine = r.owner === me;
-  const used = new Set(r.riders.values()); const seat = want >= 0 && !used.has(want) ? want : mine && !used.has(0) ? 0 : [1, 2, 0].find((s) => !used.has(s)); if (seat == null) { K.toast('The Uber is full', 1400); return; }
+  const used = new Set(r.riders.values()); const seat = want >= 0 && !used.has(want) ? want : (mine ? BOOKER_ORDER : FRIEND_ORDER).find((s) => !used.has(s)); if (seat == null) { K.toast('The Uber is full', 1400); return; }
   r.riders.set(me, seat); U.cur = r; U.seat = seat; U.yawPrev = r.st.h; U.lastPhase = ''; if (seat >= 1) showRear(r);
   p.mounted = { passenger: true, uber: true, speed: 0 }; p.yaw = r.st.h; p.pitch = -0.05;
   ctx.net?.send?.('uber', { a: 'in', id: r.id, s: seat });

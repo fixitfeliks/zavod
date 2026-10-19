@@ -96,34 +96,37 @@ async function rideTo(pg, dest, { realWait = false } = {}) {
   const hands = await pg.evaluate(() => window.__game.uber.hands());
   ok(hands && hands.every((d) => d < 0.1), 'the driver\'s hands are within 10 cm of the wheel rim', JSON.stringify(hands));
   st = await boardF(pg);
-  ok(st.seat === 0 && st.mounted, 'F gets you in, front passenger seat', JSON.stringify({ seat: st.seat }));
-  ok(st.eyeOverRoad > 1.08 && st.eyeOverRoad < 1.3, 'seated eye height', `${st.eyeOverRoad} m`);
+  ok(st.seat === 1 && st.mounted, 'F gets you in, the booker sits rear right (behind the front passenger)', JSON.stringify({ seat: st.seat }));
+  ok(st.eyeOverRoad > 1.0 && st.eyeOverRoad < 1.3, 'seated eye height', `${st.eyeOverRoad} m`);
   // the eye is inside the cabin: under the roof, inside the body width, between the dash and the rear seat
   const inCab = await pg.evaluate(() => { const c = window.__ctx.camera.position, s = window.__game.uber.state().cur.car, h = s[2], dx = c.x - s[0], dz = c.z - s[1]; const fwd = -(dx * Math.sin(h) + dz * Math.cos(h)), right = dx * Math.cos(h) - dz * Math.sin(h); return { fwd: +fwd.toFixed(2), right: +right.toFixed(2), y: +c.y.toFixed(2) }; });
-  ok(Math.abs(inCab.right) < 0.6 && inCab.fwd > -1.2 && inCab.fwd < 0.5 && inCab.y < 1.4, 'eye inside the cabin', JSON.stringify(inCab));
-  await pg.evaluate(() => { const p = window.__ctx.player; p.pitch = -0.08; }); await sleep(400); await pg.screenshot({ path: `${out}/uber-interior.png` });
+  ok(inCab.right > 0.3 && inCab.right < 0.6 && inCab.fwd > -1.3 && inCab.fwd < -0.6 && inCab.y < 1.4, 'eye inside the cabin, back row, right side', JSON.stringify(inCab));
+  ok(await pg.evaluate(() => { let n = 0; window.__ctx.scene?.traverse?.((o) => { if (o.name === 'uberRear') n++; }); return n; }) === 1, 'the booker gets the Camry rear cabin');
+  await pg.evaluate(() => { const p = window.__ctx.player; p.pitch = -0.22; }); await sleep(400); await pg.screenshot({ path: `${out}/uber-booker-eye.png` });   // the headrest, the windshield over it and the seat back's map pocket
   await pg.evaluate(() => { const p = window.__ctx.player; p.yaw += 1.1; p.pitch = -0.15; }); await sleep(400); await pg.screenshot({ path: `${out}/uber-driver.png` });
   await pg.evaluate(() => { const p = window.__ctx.player; p.yaw -= 1.1; });
   // the radio plays in the car
   const radio = await pg.waitForFunction(() => window.__ctx.world.radio?.qa?.().some((a) => a.playing), null, { timeout: 15000 }).then(() => true, () => false);
   ok(radio, 'Luna Park Radio plays in the Uber');
-  // B: a drink in the back of the Camry
+  // B: a drink, then a smoke, in the back of the Camry
   await pg.evaluate(async () => { const m = await import('/src/world/hangkit.js'); m.hangkit.give('tallboy'); }); await pg.keyboard.press('KeyB'); await sleep(400);
   const drunk = await pg.evaluate(async () => (await import('/src/world/hangkit.js')).hangkit.state().drunk); ok(drunk > 0, 'B drinks in the car', `drunk ${drunk}`);
+  await pg.evaluate(async () => (await import('/src/world/hangkit.js')).hangkit.give('blunt')); await pg.keyboard.press('KeyB'); await sleep(2000);   // the first puff lands ~0.6 s in
+  const high = await pg.evaluate(async () => (await import('/src/world/hangkit.js')).hangkit.state().high); ok(high > 0, 'B smokes in the back seat', `high ${high}`);
   // shooting out of the window: a pistol, aim out of the right side, a real mousedown
   const shot = await pg.evaluate(async () => { const c = window.__ctx, W = c.weapons; W.lock?.(1, false); W.collect('m9', 30); W.selectBag(W.bag.indexOf('m9')); await new Promise((r) => setTimeout(r, 900));
     const p = c.player, h = window.__game.uber.state().cur.car[2]; p.yaw = h - Math.PI / 2; p.pitch = -0.02; const shots = []; c.bus.on('shot', (e) => { if (e?.who === 'player') shots.push(e); });
     const f0 = W.state.fired; for (let k = 0; k < 20; k++) await new Promise((r) => requestAnimationFrame(r));
     c.input.mouse.buttons = 1; for (let k = 0; k < 6; k++) await new Promise((r) => requestAnimationFrame(r)); c.input.mouse.buttons = 0;   // the trigger, as the mouse sets it
     return { gun: W.currentId, fired: W.state.fired - f0, shots: shots.length }; });
-  ok(shot.fired > 0, 'shooting from the passenger seat works', JSON.stringify(shot));
+  ok(shot.fired > 0, 'shooting from the back seat works', JSON.stringify(shot));
   await sleep(200); await pg.screenshot({ path: `${out}/uber-shoot.png` });
   // pulls away, rides, the phone's map + next turn, the fade over the Belt, out on 8th Ave by the tavern
   await pg.waitForFunction(() => window.__game.uber.state().cur?.phase === 'riding', null, { timeout: 15000 });
   await sleep(2500); st = await U(pg); ok(st.cur.v > 1 && /ETA/.test(st.cur.lines[1]), 'riding: moving, ETA on the phone', st.cur.lines.join(' | '));
   await pg.evaluate(() => { const p = window.__ctx.player; p.yaw = window.__game.uber.state().cur.car[2]; p.pitch = -0.05; }); await sleep(300); await pg.screenshot({ path: `${out}/uber-riding.png` });
   const total = st.cur.legs.reduce((a, l) => a + l[2], 0);
-  await pg.evaluate((s) => window.__game.uber.ff(s), st.cur.legs[0][2] - 2.6 + 0.4); await sleep(500);   // into the fade over the Belt
+  await pg.evaluate((s) => window.__game.uber.ff(s - (Date.now() - window.__game.uber.state().cur.tg) / 1000), st.cur.legs[0][2] + 0.8); await sleep(500);   // into the fade over the Belt (0.8 s past the first leg, however long we've been riding)
   st = await U(pg); ok(st.cur?.phase === 'gap', 'the long hop fades over the off-map part', st.cur?.phase);
   await pg.evaluate((s) => window.__game.uber.ff(s), total + 12); await sleep(1500);
   st = await U(pg); const tav = await pg.evaluate(() => window.__game.tavern?.state?.().inZone);
@@ -159,11 +162,11 @@ async function rideTo(pg, dest, { realWait = false } = {}) {
   await B.waitForFunction(() => window.__game.uber.remote().length === 1, null, { timeout: 10000 }).catch(() => {});
   ok((await B.evaluate(() => window.__game.uber.remote().length)) === 1, 'B sees the ride');
   await A.waitForFunction(() => window.__game.uber.state().cur?.phase === 'waiting', null, { timeout: 90000 });
-  let a = await boardF(A); ok(a.seat === 0, 'A in the front seat');
+  let a = await boardF(A); ok(a.seat === 1, 'A (the booker) in the back, rear right');
   await sleep(500);
   await B.evaluate(() => { const r = window.__game.uber.remote()[0], c = r.car; window.__game.teleport(c[0] + 2.5, 0, c[1] + 0.5, 0, 0); }); await sleep(500);
   await B.keyboard.press('KeyF'); await sleep(400); let bs = await U(B);
-  ok(bs.seat >= 1 && bs.mounted, 'B hops in the back', `seat ${bs.seat}`);
+  ok(bs.seat === 2 && bs.mounted, 'B hops in the back, rear left', `seat ${bs.seat}`);
   await A.waitForFunction(() => window.__game.uber.state().cur?.phase === 'riding', null, { timeout: 15000 }); await sleep(3000);
   const ids = { a: await A.evaluate(() => window.__ctx.net.id), b: await B.evaluate(() => window.__ctx.net.id) };
   const see = async (pg, other) => pg.evaluate((o) => { const q = window.__ctx.net.peer(o), c = window.__game.uber.state().cur.car; return q ? { d: +Math.hypot(q.pos.x - c[0], q.pos.z - c[1]).toFixed(2), y: +q.pos.y.toFixed(2) } : null; }, other);

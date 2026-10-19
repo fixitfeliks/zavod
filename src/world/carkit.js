@@ -466,6 +466,7 @@ export function carEye(kind = 'sedan') {
  * in a dark trim colour → roof liner, pillars, door cards), a faint tint on the inside of the glass, dashboard with an
  * instrument binnacle (lit gauges), steering wheel on a column (returns `wheel`: rotate wheel.rotation.x to steer), seats,
  * centre console and a rear-view mirror. Opaque exterior glass hides all of it from outside. No colliders / raycast.
+ * Returns { group, wheel, seatMat } (seatMat: the seats' shared material, for callers that add or move seats).
  */
 export function carInterior(kind = 'sedan', geos = null) {
   const K = KINDS[kind] || KINDS.sedan; const G = geos || carGeometries(kind).geos; const HW = K.w / 2;
@@ -510,7 +511,7 @@ export function carInterior(kind = 'sedan', geos = null) {
   // rear-view mirror
   add(new THREE.BoxGeometry(0.03, 0.07, 0.24), I.trim, wsTop - 0.04, K.roof - 0.12, 0);
   add(new THREE.BoxGeometry(0.004, 0.055, 0.22), I.mirror, wsTop - 0.058, K.roof - 0.12, 0);
-  return { group: g, wheel };
+  return { group: g, wheel, seatMat: I.seat };
 }
 let IMATS = null;
 function gaugeTex() {   // speedo + tach dials, lit orange needles
