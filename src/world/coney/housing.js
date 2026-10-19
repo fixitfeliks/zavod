@@ -1,17 +1,18 @@
 // CONEY — Luna Park Houses: the five ~21-storey NYCHA towers north of Surf Avenue (OSM "Luna Park Houses 1..5").
-// Each complex is re-massed from its OSM footprint into the real plan: a dark recessed open-gallery core (slab edges, railing
-// panels, posts, dark back wall, beige penthouse) joining two L-shaped brick towers, each an axial wing at full height plus a
+// Each complex is re-massed from its OSM footprint into the real plan: a dark recessed open-gallery core (slab edges, chain-link
+// on pipe rails, white columns, dark back wall, beige penthouse) joining two L-shaped brick towers, each an axial wing at full height plus a
 // perpendicular wing stepping down twice. Facades: red-brown brick with white-framed punched windows two per bay (a 2-bay x
 // 4-storey canvas tile with normal + roughness maps, so reveals read recessed and the glass reflects), full-height cream panel
 // strips standing 0.1 m proud, brick-with-cream-bands top zones, through-wall/window AC units (instanced), dark coping +
 // steel guard railings + stair/elevator bulkheads on the roofs, entrance doors with canopies, lawns with low black steel
-// fences and trees. Every solid has colliders (rotated boxes are cut into <= 4 m cells before their AABBs are taken).
+// fences and trees (the boulevards and the plaza between the towers: lunayard.js). Every solid has colliders (rotated boxes are cut into <= 4 m cells before their AABBs are taken).
 // Owned by: LUNA HOUSING agent.
 import * as THREE from 'three';
 import { Batch as GeoBatch, boxGeo, worldUV } from '../sbu/geo.js';
 import { OSM, PLAY } from './osm.js';
 import { footprintAngle, cen, bbox, pip, segDist } from '../osmkit.js';
 import { leafTexture, barkTexture } from '../wsp/textures.js';
+import { planYard, buildYard } from './lunayard.js';
 
 const ST = 2.62;        // storey height (m)
 const PAR = 0.9;        // parapet above the top floor slab
@@ -19,7 +20,7 @@ const TILE_BAYS = 2, TILE_FLOORS = 4;
 const SILL = 0.85, WIN_H = 1.5, WIN_W = 1.12, WIN_AT = [0.28, 0.72];   // window layout inside one bay (fractions of the bay)
 const GAL = 1.7;        // lobby glass / 19th-floor vestibule line on the core faces (hangout geometry keys off this)
 const GALV = 2.5;       // visual gallery recess: dark back wall + slabs run this deep so the core self-shadows (critic r9 #2)
-const DOOR_HALF = 1.1, LOBBY_HALF = 7, WALK_HALF = 8.3, GROUND_HI = 13;   // GROUND_HI: the ground-floor lobby runs from the elevator wall (mid − LOBBY_HALF) to mid + 13   // hangout: lobby entrance gap, lobby half-length, 19th-floor walkway half-length
+const DOOR_HALF = 2.4, LOBBY_HALF = 7, WALK_HALF = 8.3, GROUND_HI = 13;   // DOOR_HALF: half-width of the open breezeway through the core on both gallery faces (no doors, lines up with the canopy posts) · GROUND_HI: the ground-floor lobby runs from the elevator wall (mid − LOBBY_HALF) to mid + 13 · WALK_HALF: 19th-floor walkway half-length
 
 /** The five Luna Park Houses towers in OSM.b (tall 'tower' style buildings north of the avenue, x 60..380, z -520..-110). */
 export const isLunaTower = (b) => { if (b.s !== 'tower' || !(b.h > 50)) return false; const [x, z] = cen(b.p); return x > 60 && x < 380 && z > -520 && z < -110; };
@@ -120,16 +121,17 @@ function facadeTextures(R, aniso) {
 
 function galleryTexture(aniso) {
   // one storey x 6 m of the open-gallery front: slab edge band, perforated railing panel, slim posts; everything else open
+  // (refs 01/02: chain-link floor to ceiling on a galvanised pipe frame, white columns, a concrete slab edge)
   const W = 512, H = 256; const [c, g] = canvas(W, H); g.clearRect(0, 0, W, H);
-  const py = H / ST, px = W / 6;
+  const py = H / ST, px = W / 6, MESH = 14;   // MESH: chain-link diamond pitch in px (~16 cm, readable at gallery distance)
+  g.strokeStyle = 'rgba(178,176,166,0.95)'; g.lineWidth = 1.6;                                        // chain-link diamonds
+  for (let k = -H; k < W + H; k += MESH) { g.beginPath(); g.moveTo(k, 0); g.lineTo(k + H, H); g.stroke(); g.beginPath(); g.moveTo(k + H, 0); g.lineTo(k, H); g.stroke(); }
   g.fillStyle = '#7d786c'; g.fillRect(0, H - 0.24 * py, W, 0.24 * py);                              // slab edge
   g.fillStyle = 'rgba(40,36,30,0.6)'; g.fillRect(0, H - 0.24 * py, W, 2);
-  g.fillStyle = '#1e1f20'; g.fillRect(0, H - 1.1 * py, W, 0.86 * py);                                  // railing panel (black steel, 1.1 m)
-  g.fillStyle = 'rgba(255,255,255,0.08)'; for (let y = H - 1.08 * py; y < H - 0.32 * py; y += 5) g.fillRect(0, y, W, 1);
-  g.clearRect(0, H - 0.95 * py, W, 2); g.clearRect(0, H - 0.6 * py, W, 2);                             // slits (sub-50% so it survives mips)
-  g.fillStyle = '#38393a'; g.fillRect(0, H - 1.14 * py, W, 0.06 * py);                                 // top rail
-  g.fillStyle = '#3c3c3a'; for (let x = 0; x <= W; x += 1.5 * px) g.fillRect(x - 0.05 * px, 0, 0.1 * px, H);   // posts
-  g.fillStyle = '#57544d'; g.fillRect(0, 0, 0.16 * px, H); g.fillRect(W - 0.16 * px, 0, 0.16 * px, H);  // column at the tile seam
+  g.fillStyle = '#a9aaa4'; g.fillRect(0, H - 1.08 * py, W, 0.06 * py); g.fillRect(0, H - 0.5 * py, W, 0.04 * py); g.fillRect(0, 0, W, 0.05 * py);   // pipe rails + head rail
+  g.fillStyle = '#9a9b95'; for (let x = 0; x <= W; x += 1.5 * px) g.fillRect(x - 0.03 * px, 0, 0.06 * px, H);   // pipe posts
+  g.fillStyle = '#dcdad2'; g.fillRect(0, 0, 0.2 * px, H); g.fillRect(W - 0.2 * px, 0, 0.2 * px, H);    // white column at the tile seam
+  g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(0.16 * px, 0, 0.04 * px, H);
   const t = texOf(c, true, aniso); return t;
 }
 
@@ -149,24 +151,39 @@ function galleryBackTexture(R, aniso) {
 }
 
 function lobbyFloorTexture(R) {
-  // 12" VCT in a cream / brown checker with a speckle, 4 x 4 tiles per 1.22 m repeat
+  // 12" VCT, light cream with a speckle (ref 03); the dark brown inlay squares down the centre are geometry (coreInterior)
   const S = 256; const [c, g] = canvas(S, S); const t = S / 4;
   for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
-    const dark = (i + j) & 1; g.fillStyle = dark ? '#7b5f46' : '#d6ccb4'; g.fillRect(i * t, j * t, t, t);
-    for (let k = 0; k < 90; k++) { g.fillStyle = dark ? `rgba(40,28,18,${R() * 0.4})` : `rgba(120,110,90,${R() * 0.35})`; g.fillRect(i * t + R() * t, j * t + R() * t, 1 + R() * 2, 1 + R() * 2); }
-    g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(i * t, j * t, t, 1); g.fillRect(i * t, j * t, 1, t);
+    g.fillStyle = R() < 0.5 ? '#ddd3bd' : '#d6ccb4'; g.fillRect(i * t, j * t, t, t);
+    for (let k = 0; k < 90; k++) { g.fillStyle = `rgba(120,110,90,${R() * 0.35})`; g.fillRect(i * t + R() * t, j * t + R() * t, 1 + R() * 2, 1 + R() * 2); }
+    g.fillStyle = 'rgba(0,0,0,0.12)'; g.fillRect(i * t, j * t, t, 1); g.fillRect(i * t, j * t, 1, t);
   }
   const x = texOf(c, true, 8); return x;
 }
 
 function lobbyWallTexture(R) {
-  // one storey tall x 2.62 m: cream glazed-tile wainscot to 1.4 m, a teal cap band, pale painted block above
+  // one storey tall x 2.62 m: tan glazed structural brick (8" x 16" face, ref 03) on a dark brown cove base
   const W = 256, H = 256; const [c, g] = canvas(W, H); const py = H / ST, px = W / ST;
-  g.fillStyle = '#c9cdbf'; g.fillRect(0, 0, W, H);
-  for (let y = 0; y < H - 1.5 * py; y += 0.2 * py) { g.fillStyle = 'rgba(0,0,0,0.07)'; g.fillRect(0, y, W, 1); }   // block courses
-  const top = H - 1.4 * py;
-  for (let r = 0, y = top; y < H; r++, y += 0.1 * py) for (let x = (r & 1) ? -0.1 * px : 0; x < W; x += 0.2 * px) { const v = R(); g.fillStyle = v < 0.2 ? '#d9cfae' : v > 0.85 ? '#ece4c8' : '#e3dabb'; g.fillRect(x + 1, y + 1, 0.2 * px - 2, 0.1 * py - 2); }
-  g.fillStyle = '#2f6f6a'; g.fillRect(0, top - 0.12 * py, W, 0.12 * py); g.fillStyle = '#244f4c'; g.fillRect(0, H - 0.12 * py, W, 0.12 * py);
+  g.fillStyle = '#b7a888'; g.fillRect(0, 0, W, H);   // mortar
+  const bh = 0.2 * py, bl = 0.4 * px;
+  for (let r = 0, y = H - 0.12 * py - bh; y > -bh; r++, y -= bh) for (let x = (r & 1) ? -bl / 2 : 0; x < W; x += bl) {
+    const v = R(); g.fillStyle = v < 0.2 ? '#d5c6a2' : v > 0.85 ? '#e4d8b9' : '#dccfae'; g.fillRect(x + 1.5, y + 1.5, bl - 3, bh - 3);
+    g.fillStyle = 'rgba(255,255,255,0.18)'; g.fillRect(x + 3, y + 3, bl - 6, 2);   // glaze highlight
+  }
+  g.fillStyle = '#4a2f22'; g.fillRect(0, H - 0.12 * py, W, 0.12 * py);
+  return texOf(c, true, 8);
+}
+
+/** decorative cement breeze block (ref 02): a 2 x 2 tile of 40 cm blocks, each pierced by a four-petal pattern. 256 px. */
+function breezeTexture() {
+  const S = 256, b = S / 2; const [c, g] = canvas(S, S); g.fillStyle = '#9d968a'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+    const x = i * b, y = j * b, cx = x + b / 2, cy = y + b / 2;
+    g.fillStyle = '#cfc8b9'; g.fillRect(x + 3, y + 3, b - 6, b - 6);
+    g.fillStyle = '#26231f';   // the pierced openings: four petals around a solid centre
+    for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { g.beginPath(); g.moveTo(cx + dx * 8, cy + dy * 8); g.quadraticCurveTo(cx + dx * 46, cy + dy * 8, cx + dx * 50, cy + dy * 50); g.quadraticCurveTo(cx + dx * 8, cy + dy * 46, cx + dx * 8, cy + dy * 8); g.fill(); }
+    g.fillStyle = 'rgba(0,0,0,0.15)'; g.fillRect(x + 3, y + b - 6, b - 6, 3);
+  }
   return texOf(c, true, 8);
 }
 
@@ -260,6 +277,13 @@ function makeHousingMats(world, M) {
   reg('hLobbyCeil', new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xf2f6ff, emissiveIntensity: 1.1, roughness: 0.6 }), 'concrete', 0.5);
   reg('hButton', new THREE.MeshStandardMaterial({ color: 0xffd27a, emissive: 0xffb040, emissiveIntensity: 2.2, roughness: 0.4 }), 'metal', 1);
   reg('hCanopy', new THREE.MeshStandardMaterial({ color: 0x3a3d40, roughness: 0.55, metalness: 0.5 }), 'metal', 0.5);
+  // the core's galleries + halls (refs 01-03): breeze block, green steel doors, brown VCT inlays, grey conduit; the yard's plaza + bins
+  reg('hBreeze', new THREE.MeshStandardMaterial({ map: breezeTexture(), roughness: 0.92, metalness: 0, emissive: 0x1a1814 }), 'concrete', 1 / 0.8);
+  reg('hGreenDoor', new THREE.MeshStandardMaterial({ color: 0x1f4a33, roughness: 0.45, metalness: 0.4 }), 'metal', 0.5);
+  reg('hInlay', new THREE.MeshStandardMaterial({ color: 0x4a2a1e, roughness: 0.3, metalness: 0, envMapIntensity: 0.8 }), 'concrete', 0.5);
+  reg('hConduit', new THREE.MeshStandardMaterial({ color: 0x8c9094, roughness: 0.4, metalness: 0.7 }), 'metal', 0.5);
+  reg('hPlaza', new THREE.MeshStandardMaterial({ color: 0x8f8b82, roughness: 0.95, metalness: 0 }), 'concrete', 0.25);
+  reg('hBin', new THREE.MeshStandardMaterial({ color: 0x3b4f45, roughness: 0.6, metalness: 0.5 }), 'metal', 0.5);
   return M;
 }
 
@@ -335,6 +359,7 @@ function buildAll(world, M) {
   const trees = [];
   const lawnWorld = [];
   const others = OSM.b.filter((b) => !isLunaTower(b)).map((b) => b._bb || (b._bb = bbox(b.p)));
+  const built = [];   // per tower: parts (local), local->world matrix, OSM centre
 
   for (const b of towers) {
     const ang = footprintAngle(b.p); const [ox, oz] = cen(b.p);
@@ -355,9 +380,12 @@ function buildAll(world, M) {
     const core = buildTower(L, parts, R, acs, m);
     if (core) (world.lunaTowers || (world.lunaTowers = [])).push(towerInfo(core, m, [ox, oz]));
     L.emit(B, M, m, world);
-    // grounds: lawns, fences, paths, trees
-    grounds(G, B, world, M, parts, m, ang, [ox, oz], [cx, cz], trees, others);
+    built.push({ parts, m, ang, c: [ox, oz], lc: [cx, cz] });
   }
+  // the yard first (boulevards + plaza, lunayard.js), so the lawn grid of every tower leaves their footprints clear
+  const yard = planYard(built);
+  for (const t of built) grounds(G, B, world, M, t.parts, t.m, t.ang, t.c, t.lc, trees, others, yard.noLawn);   // lawns, fences, paths, trees
+  { const Y = new Local(); buildYard(world, M, Y, yard, trees); Y.emit(G, M, new THREE.Matrix4(), world, 3); }
 
   // ---- AC units (instanced, capped) ----------------------------------------------------------------------------------
   const MAX_AC = 3000; let list = acs; if (list.length > MAX_AC) { list = []; const p = MAX_AC / acs.length; for (const a of acs) if (R() < p && list.length < MAX_AC) list.push(a); }
@@ -458,7 +486,7 @@ function buildTower(L, parts, R, acs, m) {
               const cutsG = [lo, hi, mid - LOBBY_HALF, mid - DOOR_HALF, mid + DOOR_HALF, mid + GROUND_HI].filter((v) => v >= lo && v <= hi).sort((u, v) => u - v);
               for (let k = 0; k + 1 < cutsG.length; k++) {
                 const u0 = cutsG[k], u1 = cutsG[k + 1], um = (u0 + u1) / 2; if (u1 - u0 < 0.01) continue;
-                if (Math.abs(um - mid) < DOOR_HALF) { rect('hLobbyGlass', f, u0, u1, ST - 0.42, ST, -GAL, bw); continue; }   // transom over the door gap
+                if (Math.abs(um - mid) < DOOR_HALF) { rect('hSlab', f, u0, u1, ST - 0.42, ST, -GAL, bw); continue; }   // concrete beam over the open breezeway
                 if (um > mid - LOBBY_HALF && um < mid + GROUND_HI) {
                   rect('hLobbyGlass', f, u0, u1, 0, ST, -GAL, bw);
                   const nm = Math.max(1, Math.round((u1 - u0) / 1.5)); for (let j = 0; j <= nm; j++) mullion(L, f, P, u0 + (u1 - u0) * j / nm, -GAL, 0, ST);
@@ -467,7 +495,7 @@ function buildTower(L, parts, R, acs, m) {
                 rect('hBrickWin', f, u0, u1, 0, ST, -GAL, bw);
               }
               for (const e of [mid - DOOR_HALF, mid + DOOR_HALF]) if (e > lo && e < hi) mullion(L, f, P, e, -GAL, 0, ST, 0.09);
-              if (mid - DOOR_HALF > lo && mid + DOOR_HALF < hi) { const t0 = P(f, mid - DOOR_HALF, ST - 0.47, -GAL - 0.05), t1 = P(f, mid + DOOR_HALF, ST - 0.4, -GAL + 0.07); L.box('hRail', [Math.min(t0[0], t1[0]), ST - 0.47, Math.min(t0[2], t1[2])], [Math.max(t0[0], t1[0]), ST - 0.4, Math.max(t0[2], t1[2])], { collide: false }); }
+              if (mid - DOOR_HALF > lo && mid + DOOR_HALF < hi) { const t0 = P(f, mid - DOOR_HALF, ST - 0.47, -GAL - 0.05), t1 = P(f, mid + DOOR_HALF, ST - 0.4, -GAL + 0.07); L.box('hSlab', [Math.min(t0[0], t1[0]), ST - 0.47, Math.min(t0[2], t1[2])], [Math.max(t0[0], t1[0]), ST - 0.4, Math.max(t0[2], t1[2])], { collide: false }); }
               // the strip between the lobby line and the deeper gallery wall stays dark under the first slab
               rect('hGalleryBack', f, a, bnd, ST - 0.02, ST, -GALV, bw);
             }
@@ -573,7 +601,7 @@ function canopy(L, f, P, a, o) {
 // ---------------------------------------------------------------------------------------------------------------------------
 // grounds: lawn cells (local 2 m grid) kept clear of the buildings (3.5 m walks), streets, lots, courts, other buildings and
 // entrance paths; low black fence along every lawn edge; trees on the lawn interiors.
-function grounds(G, B, world, M, parts, m, ang, [ox, oz], [cx, cz], trees, others) {
+function grounds(G, B, world, M, parts, m, ang, [ox, oz], [cx, cz], trees, others, noLawn) {
   const R = world.R; const CELL = 2;
   const v = new THREE.Vector3(); const W = (lx, lz) => { v.set(lx, 0, lz).applyMatrix4(m); return [v.x, v.z]; };
   const x0 = Math.min(...parts.map((p) => p.x0)) - 26, x1 = Math.max(...parts.map((p) => p.x1)) + 26, z0 = Math.min(...parts.map((p) => p.z0)) - 26, z1 = Math.max(...parts.map((p) => p.z1)) + 26;
@@ -598,6 +626,7 @@ function grounds(G, B, world, M, parts, m, ang, [ox, oz], [cx, cz], trees, other
     const [x, z] = W(lx, lz);
     if (roads.some((r) => segDist(x, z, r.p) < r.w / 2 + 2.6)) continue;
     if (walks.some((w) => segDist(x, z, w.p) < w.w / 2 + 0.8)) continue;
+    if (noLawn(x, z)) continue;   // boulevards + the plaza (lunayard.js)
     if (lots.some((p) => pip(x, z, p)) || courts.some((o) => pip(x, z, o.p))) continue;
     if (obs.some((q) => x > q.x0 - 3 && x < q.x1 + 3 && z > q.z0 - 3 && z < q.z1 + 3)) continue;
     lawn[i * nz + j] = 1;
@@ -690,8 +719,8 @@ function mergeSimple(list) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
-// Hangout interior (coney/hangout.js): the core's ground floor becomes a lobby you can walk into through a gap in the lobby
-// glass (both gallery faces), with a bank of 3 brushed-steel elevators on one end wall and mailboxes on the other; the open
+// Hangout interior (coney/hangout.js): the core's ground floor becomes a lobby with an open breezeway straight through it
+// (both gallery faces, no doors), with a bank of 3 brushed-steel elevators on one end wall and mailboxes on the other; the open
 // gallery recess on the 19th floor becomes a railed walkway (both faces) with 3 elevator doors on its back wall. Everything
 // else in the core stays solid. Local frame: a = along the core spine, c = across it, P3 maps (a, y, c) to local (x, y, z).
 function coreInterior(L, p, Ht) {
@@ -721,7 +750,7 @@ function coreInterior(L, p, Ht) {
       const fine = (...v) => { const [mn, mx] = bx(...v); L.collide(mn, mx, 0.2); };
       const cmB0 = (i0 + i1) / 2;   // the whole lane-A half of the wall comes out: a fire stair discharges into the lobby, it does not squeeze through a slot
       colF(sh0 - 1.2, ST, i0, sh0, yF, i1); fine(sh0 - 1.2, 0, cmB0 + 0.35, sh0, ST, i1);
-      vis('hDoor', sh0 - 0.08, 0, i0 + 0.15, sh0 - 0.03, 2.05, i0 + 1.35);
+      vis('hGreenDoor', sh0 - 0.08, 0, i0 + 0.15, sh0 - 0.03, 2.05, i0 + 1.35);
     } else colF(sh0 - 1.2, yD, i0, sh0, yF, i1);
     colF(sh1, yD, i0, A[1], yF, i1);
     col(A[0], yF + CEIL, i0, sa0, Ht, i1); colF(sh1, yF, i0, A[1], Ht, i1); colF(sh0, yF + 2.4, i0, sh1, Ht, i1); colF(sa1, yF, hw1 + 0.06, sh0, Ht, i1);
@@ -747,14 +776,14 @@ function coreInterior(L, p, Ht) {
     const cmB = (i0 + i1) / 2, laneA = [i0 + 0.05, cmB - 0.1], laneB = [cmB + 0.1, i1 - 0.05], f0 = sh0 + 1.2, f1 = f0 + 1.8, nS = 6, rS = ST / 2 / nS, tS = (f1 - f0) / nS;
     vis('hTerrazzo', sa0, yF, i0, sh0, yF + 0.02, hw1); vis('hLobbyCeil', sa0 + 2, yF + 2.15, i0 + 0.6, sa0 + 2.6, yF + 2.18, i0 + 1.1);    // hallway floor + light
     for (const c of [i0 + 0.02, hw1]) vis('hLobbyWall', sa0, yF, c - 0.02, sh0, yF + 2.2, c + 0.02);
-    vis('hDoor', sh0 - 0.05, yF, i0 + 0.3, sh0, yF + 2.1, i0 + 1.4);   // propped-open fire door (a leaf against the wall)
+    vis('hGreenDoor', sh0 - 0.05, yF, i0 + 0.3, sh0, yF + 2.1, i0 + 1.4);   // propped-open fire door (a leaf against the wall)
     for (let n = 0; n <= FL; n++) {   // landings: near (full floor) and far (half floor), slabs so the flight below stays clear
       const y = yF - n * ST; colF(sh0, y - 0.25, i0, f0, y, i1); vis('hTerrazzo', sh0, y - 0.25, i0, f0, y, i1);
       if (n < FL) { const yh = y - ST / 2; colF(f1, yh - 0.25, i0, sh1, yh, i1); vis('hTerrazzo', f1, yh - 0.25, i0, sh1, yh, i1);
         for (let k = 0; k < nS; k++) {   // lane A: down along +a from the floor to the half landing; lane B: back along −a to the next floor
           const ya = y - (k + 1) * rS; colF(f0 + k * tS, ya - 0.2, laneA[0], f0 + (k + 1) * tS, ya, laneA[1]); vis('hTerrazzo', f0 + k * tS, ya - 0.2, laneA[0], f0 + (k + 1) * tS, ya, laneA[1]);
           const yb = yh - (k + 1) * rS; colF(f1 - (k + 1) * tS, yb - 0.2, laneB[0], f1 - k * tS, yb, laneB[1]); vis('hTerrazzo', f1 - (k + 1) * tS, yb - 0.2, laneB[0], f1 - k * tS, yb, laneB[1]); } }
-      vis('hDoor', sh0, y, laneB[0] + 0.3, sh0 + 0.05, y + 2.05, laneB[1] - 0.1);   // each floor's (locked) corridor door
+      vis('hGreenDoor', sh0, y, laneB[0] + 0.3, sh0 + 0.05, y + 2.05, laneB[1] - 0.1);   // each floor's (locked) corridor door
     }
     vis('hLobbyWall', f0, yD, cmB - 0.1, f1, yF + 2.4, cmB + 0.1); { const [a, b2] = bx(f0, yD, cmB - 0.1, f1, yF + 2.4, cmB + 0.1); L.collide(a, b2, 0.2); }   // scissor divider
     for (const [a0, a1, c0, c1] of [[sh0, sh1, i0, i0 + 0.02], [sh0, sh1, i1 - 0.02, i1], [sh1 - 0.02, sh1, i0, i1], [sh0, sh0 + 0.02, hw1 + 0.1, i1]]) vis('hLobbyWall', a0, yD - 0.25, c0, a1, yF + 2.4, c1);   // painted block walls
@@ -809,7 +838,9 @@ function coreInterior(L, p, Ht) {
   // the big ground-floor lobby: a row of clad columns down the middle, a security desk by the door, benches, planters
   { const cm2 = (i0 + i1) / 2;
     for (let a = mid + 3.5; a < mid + GROUND_HI - 2; a += 4.5) { vis('hLobbyWall', a - 0.25, 0, cm2 - 0.25, a + 0.25, ST, cm2 + 0.25); col(a - 0.25, 0, cm2 - 0.25, a + 0.25, ST, cm2 + 0.25); }
-    vis('hDirectory', mid + 2.2, 0, i1 - 1.4, mid + 3.8, 1.05, i1 - 0.8); vis('hRail', mid + 2.15, 1.05, i1 - 1.45, mid + 3.85, 1.1, i1 - 0.75); col(mid + 2.2, 0, i1 - 1.4, mid + 3.8, 1.05, i1 - 0.8);   // security desk
+    vis('hDirectory', mid + 5.2, 0, i1 - 1.4, mid + 6.8, 1.05, i1 - 0.8); vis('hRail', mid + 5.15, 1.05, i1 - 1.45, mid + 6.85, 1.1, i1 - 0.75); col(mid + 5.2, 0, i1 - 1.4, mid + 6.8, 1.05, i1 - 0.8);   // security desk, clear of the breezeway
+    for (let a = mid - LOBBY_HALF + 1.2; a < mid + GROUND_HI - 0.6; a += 1.8) if (Math.abs(a - mid - 3.5) % 4.5 > 0.5) vis('hInlay', a - 0.3, 0.03, cm2 - 0.3, a + 0.3, 0.034, cm2 + 0.3);   // brown VCT inlays down the centre (ref 03)
+    for (const [a, c] of [[mid - LOBBY_HALF + 0.25, i0 + 0.12], [mid + GROUND_HI - 0.25, i1 - 0.12]]) { vis('hConduit', a - 0.03, 0, c - 0.03, a + 0.03, ST - 0.1, c + 0.03); vis('hPanel', a - 0.12, 2.0, c - 0.15, a + 0.12, 2.3, c + 0.15); }   // conduit + junction box
     for (const a of [mid + 6.5, mid + 10.5]) { vis('hRail', a - 0.9, 0.42, i0 + 0.35, a + 0.9, 0.47, i0 + 0.8); vis('hRail', a - 0.9, 0.47, i0 + 0.3, a + 0.9, 0.9, i0 + 0.36); col(a - 0.9, 0, i0 + 0.3, a + 0.9, 0.5, i0 + 0.8); }   // benches along the glass
     for (const a of [mid - LOBBY_HALF + 0.6, mid + GROUND_HI - 0.9]) for (const c of [i0 + 0.45, i1 - 0.45]) { vis('hDirectory', a - 0.3, 0, c - 0.3, a + 0.3, 0.6, c + 0.3); vis('hLawn', a - 0.26, 0.6, c - 0.26, a + 0.26, 0.95, c + 0.26); }   // planters
   }
@@ -830,7 +861,8 @@ function coreInterior(L, p, Ht) {
   for (const c of [sc0, sc1]) vis('hRail', mid + LOBBY_HALF - 0.04, yF, c - 0.05, mid + LOBBY_HALF + 0.06, yF + 2.2, c + 0.05); vis('hRail', mid + LOBBY_HALF - 0.04, yF + 2.15, sc0, mid + LOBBY_HALF + 0.06, yF + 2.22, sc1);   // stair door frame
   bank(yF);
   L.sign('hFloor19', P3(mid + LOBBY_HALF - 0.02, yF + 1.55, (sc1 + i1) / 2), nrmA(-1), 0.8, 0.8);                  // "19" on the far end wall, beside the roof stair
-  vis('hDoor', mid + LOBBY_HALF - 0.04, yF + 0.03, i1 - 0.95, mid + LOBBY_HALF, yF + 1.3, i1 - 0.35);             // compactor-chute hatch
+  vis('hGreenDoor', mid + LOBBY_HALF - 0.04, yF + 0.03, i1 - 0.95, mid + LOBBY_HALF, yF + 1.3, i1 - 0.35);        // compactor-chute hatch
+  for (let a = mid - LOBBY_HALF + 1.4; a < mid + LOBBY_HALF - 0.8; a += 1.8) vis('hInlay', a - 0.3, yF + 0.03, (i0 + i1) / 2 - 0.3, a + 0.3, yF + 0.034, (i0 + i1) / 2 + 0.3);   // brown VCT inlays
   const walks = [];
   for (const [cOut, cIn, sg] of [[C[0], i0, 1], [C[1], i1, -1]]) {
     col(mid - WALK_HALF, yF - 0.25, cOut, mid + WALK_HALF, yF, cIn);
@@ -847,7 +879,7 @@ function coreInterior(L, p, Ht) {
     const cW = cIn + sg * WT, segs = []; let a0 = mid - WALK_HALF;
     for (const [o0, o1] of OPEN) { segs.push([a0, o0]); a0 = o1; } segs.push([a0, mid + WALK_HALF]);
     for (const [s0, s1] of segs) {
-      colF(s0, yF, cIn, s1, yF + CEIL, cW); vis('hVestibule', s0, yF + 0.01, cIn, s1, yF + ST - 0.02, cW);
+      colF(s0, yF, cIn, s1, yF + CEIL, cW); vis('hBreeze', s0, yF + 0.01, cIn, s1, yF + ST - 0.02, cW);   // breeze-block gallery wall (ref 02)
       const q0 = Math.max(s0, mid - LOBBY_HALF), q1 = Math.min(s1, mid + LOBBY_HALF); if (q1 > q0) vis('hLobbyWall', q0, yF + 0.01, cW, q1, yF + CEIL - 0.02, cW + sg * 0.02);
     }
     for (const [o0, o1] of OPEN) {
@@ -857,6 +889,8 @@ function coreInterior(L, p, Ht) {
       vis('hSlab', o0, yF, cIn, o1, yF + 0.035, cW);                                                                         // threshold
     }
     L.sign('hFloor19', P3(mid - 1.0, yF + 1.6, cIn - sg * 0.015), nrm(-sg), 1.1, 1.1);   // painted floor number beside the doorways
+    for (const a of [mid - 7.8, mid + 0.6, mid + 6.4]) { vis('hGreenDoor', a, yF + 0.01, cIn - sg * 0.05, a + 0.95, yF + 2.1, cIn); vis('hRail', a + 0.78, yF + 1.0, cIn - sg * 0.08, a + 0.86, yF + 1.06, cIn); }   // green steel flat doors + handles (refs 01, 03)
+    vis('hConduit', mid + 5.6, yF, cIn - sg * 0.06, mid + 5.66, yF + ST, cIn);   // grey conduit up the wall
     for (let a = mid - WALK_HALF + 1.4; a < mid + WALK_HALF - 1; a += 3.6) { const cm = cOut + sg * 0.95; vis('hRail', a - 0.3, yF + ST - 0.1, cm - 0.14, a + 0.3, yF + ST - 0.02, cm + 0.14); vis('hLobbyCeil', a - 0.27, yF + ST - 0.12, cm - 0.11, a + 0.27, yF + ST - 0.1, cm + 0.11); }   // gallery ceiling fixtures
     walks.push({ cOut, cIn, sg });
   }
@@ -873,7 +907,7 @@ function towerInfo(core, m, centre) {
   const lobby = {
     // stand in front of each elevator door, facing it
     cars: core.cars.map((cc) => ({ pos: toWorld(core.mid - core.lobbyHalf + 1.1, 0, cc), yaw: yawOf(ea.clone().negate()) })),
-    doors: [core.i0, core.i1].map((c, k) => ({ inside: toWorld(core.mid, 0, c + (k ? -1.2 : 1.2)), outside: toWorld(core.mid, 0, c + (k ? 1 : -1) * (GAL + 5)), yawIn: yawOf(ec.clone().multiplyScalar(k ? -1 : 1)), plane: toWorld(core.mid, 0, c), along: ea.clone().normalize(), half: core.doorHalf })),
+    doors: [core.i0, core.i1].map((c, k) => ({ inside: toWorld(core.mid, 0, c + (k ? -1.2 : 1.2)), outside: toWorld(core.mid, 0, c + (k ? 1 : -1) * (GAL + 5)), yawIn: yawOf(ec.clone().multiplyScalar(k ? -1 : 1)), plane: toWorld(core.mid, 0, c), along: ea.clone().normalize(), half: core.doorHalf, open: true })),   // open: the breezeway has no doors (hangout.js skips its sliding leaves)
   };
   // 19th floor: both walkways share the one elevator lobby — cars[k] stands in front of lobby car k (facing its door, -a);
   // view = the railing on that walkway, looking straight out

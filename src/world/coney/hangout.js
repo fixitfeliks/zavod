@@ -233,12 +233,13 @@ function buildIgor(world, M, pos) {
   return ipos;
 }
 
-// ---- lobby doors: two sliding glass leaves in every lobby entrance; closed = collider, open when anyone is within 2.5 m ----
+// ---- lobby doors: two sliding glass leaves in every closed lobby entrance; closed = collider, open when anyone is within 2.5 m ----
 function buildDoors(world) {
   const { ctx, scene } = world; H.doors = [];
   const glass = new THREE.MeshPhysicalMaterial({ color: 0x9fb0b8, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.45, envMapIntensity: 1.3 });
   const frame = new THREE.MeshStandardMaterial({ color: 0x2a2c2e, roughness: 0.4, metalness: 0.8 });
   for (const t of H.towers) for (const d of t.lobby.doors) {
+    if (d.open) continue;   // the Luna towers' ground floor is an open breezeway (housing.js): nothing to slide
     const g = new THREE.Group(); g.position.copy(d.plane); g.rotation.y = Math.atan2(d.along.x, d.along.z) - Math.PI / 2; scene.add(g);
     const leaves = [-1, 1].map((s2) => { const L = new THREE.Group(); const fg = []; const pane = new THREE.Mesh(new THREE.BoxGeometry(d.half - 0.04, 2.1, 0.03), glass); pane.position.y = 1.05; L.add(pane);
       for (const [w, h, x, y] of [[d.half, 0.08, 0, 2.1], [d.half, 0.08, 0, 0.04], [0.06, 2.1, s2 * (d.half / 2 - 0.03), 1.05], [0.06, 2.1, -s2 * (d.half / 2 - 0.03), 1.05], [0.04, 0.5, -s2 * (d.half / 2 - 0.2), 1.1]]) fg.push(new THREE.BoxGeometry(w, h, 0.06).translate(x, y, 0));
