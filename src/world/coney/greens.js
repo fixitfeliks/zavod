@@ -8,6 +8,8 @@ import * as THREE from 'three';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildPerson, peopleReady } from '../people.js';
+import { STREET_NAMES } from './streetnames.js';
+import { segDist } from '../osmkit.js';
 
 export function buildGreens(world, M) {
   const { scene, ctx } = world; const towers = world.lunaTowers || []; if (!towers.length || !M?.hLawn) return;
@@ -113,10 +115,15 @@ export function buildGreens(world, M) {
   }
   // ---- NYC park benches in rows along the paths (backs to the lawn fences), babushkas on some of them ----
   const benches = []; let nb = 0;
+  // no bench looks out onto W 12 St or W 8 St (the real paths face inward, onto the courtyards); the babushkas sit in the
+  // Luna Park Houses courtyards, well back from every street
+  const sideSts = STREET_NAMES.filter((q) => /^W (12|8) St$/.test(q.n)).map((q) => q.p);
+  const facesSideSt = (x, z, fx, fz) => [3, 7, 11, 15].some((d) => sideSts.some((p) => segDist(x + fx * d, z + fz * d, p) < 6));
+  const courtyard = (x, z) => x > 60 && x < 380 && z > -520 && z < -110 && !STREET_NAMES.some((q) => segDist(x, z, q.p) < 20);
   for (const f of W.fenceSegs || []) {
     const dx = f.b[0] - f.a[0], dz = f.b[1] - f.a[1], L = Math.hypot(dx, dz); if (L < 6) continue; const ux = dx / L, uz = dz / L, yaw = Math.atan2(ux, uz) - Math.PI / 2;
     for (let t = 1.2, k = 0; t < L - 1.2 && nb < 260; t += 2.25, k++) { if (k % 4 === 3) continue;   // rows of three with a gap
-      const x = f.a[0] + ux * t + f.n[0] * 0.95, z = f.a[1] + uz * t + f.n[1] * 0.95; if (isLawn(x, z) || blocked(x, z, 0.35)) continue;
+      const x = f.a[0] + ux * t + f.n[0] * 0.95, z = f.a[1] + uz * t + f.n[1] * 0.95; if (isLawn(x, z) || blocked(x, z, 0.35) || facesSideSt(x, z, f.n[0], f.n[1])) continue;
       const P = { x, z, yaw }, [px, pz] = at(P, 0, 1), sg = (px - x) * f.n[0] + (pz - z) * f.n[1] > 0 ? 1 : -1;
       for (const zz of [0.1, 0.0, -0.1]) box(mats.benchWood, P, 0, 0.45, zz * sg, 1.9, 0.035, 0.085);
       for (const yy of [0.62, 0.76]) box(mats.benchWood, P, 0, yy, -0.22 * sg, 1.9, 0.09, 0.03, -0.18 * sg);
@@ -126,8 +133,8 @@ export function buildGreens(world, M) {
   }
   grid.clear();   // placement is done: the updaters below share this scope and would keep the collider index (~5 MB) alive
   const babs = [];
-  if (peopleReady()) { const want = ctx.safeMode ? 4 : ctx.lite ? 14 : 45, step = Math.max(1, Math.floor(benches.length / want));
-    for (let i = 3; i < benches.length && babs.length < want; i += step) { const b = benches[i];
+  if (peopleReady()) { const want = ctx.safeMode ? 4 : ctx.lite ? 14 : 45, inner = benches.filter((b) => courtyard(b.x, b.z)), pool = inner.length >= 6 ? inner : benches, step = Math.max(1, Math.floor(pool.length / want));
+    for (let i = Math.min(3, pool.length - 1); i < pool.length && babs.length < want; i += step) { const b = pool[i];
       for (const off of Math.random() < 0.6 ? [-0.45, 0.45] : [0]) { const fig = buildPerson({ avatar: 'f09', pose: 'sit', seed: 40 + babs.length }); if (!fig) continue;
         const ax = Math.cos(b.face), az = -Math.sin(b.face); fig.group.position.set(b.x + ax * off, 0, b.z + az * off); fig.group.rotation.y = b.face; scene.add(fig.group);
         { const col = new THREE.MeshStandardMaterial({ color: [0x8a2a3a, 0x2a4a7a, 0x6a5a2a, 0x3a3a3a, 0x7a3a6a][babs.length % 5], roughness: 0.9, side: THREE.DoubleSide });   // платок: over the crown and round the back, face open, tied under the chin
