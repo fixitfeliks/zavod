@@ -435,7 +435,7 @@ function fireShot(w, opts = {}) {
     } else {
       const surface = ud.surface || (ctx.world?.surfaceAt?.(hit.point)) || 'concrete';
       S.fx.impact(hit.point, n, surface, d);
-      ctx.bus.emit('impact', { point: hit.point.clone(), normal: n, surface, distance: dist });
+      ctx.bus.emit('impact', { point: hit.point.clone(), normal: n, surface, distance: dist, object: hit.object, instanceId: hit.instanceId, dir: d.clone(), damage: sp.damage });
     }
   }
   for (const [soldier, acc] of soldierHits) {

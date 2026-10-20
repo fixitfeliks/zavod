@@ -43,7 +43,7 @@ export function resolveCircle(grid, x, z, r, y0, y1, skip, res) {
         if (px < pz) { nx = (res.x - b.min.x < b.max.x - res.x) ? -1 : 1; nz = 0; depth = px + r; } else { nz = (res.z - b.min.z < b.max.z - res.z) ? -1 : 1; nx = 0; depth = pz + r; }
       }
       res.x += nx * depth; res.z += nz * depth; any = true; res.hit = true;
-      if (depth > res.depth) { res.depth = depth; res.nx = nx; res.nz = nz; }
+      if (depth > res.depth) { res.depth = depth; res.nx = nx; res.nz = nz; res.box = b; }
     }
     if (!any) break;
   }

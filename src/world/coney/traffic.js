@@ -607,7 +607,7 @@ function collidePlayer(dt) {
     mv.pos.x += nx * best; mv.pos.z += nz * best;
     const cvx = fx * c.v, cvz = fz * c.v, rvn = (mv.vel.x - cvx) * nx + (mv.vel.z - cvz) * nz;
     if (rvn < 0) { mv.vel.x -= nx * rvn * 1.25; mv.vel.z -= nz * rvn * 1.25; mv.vel.multiplyScalar(0.82); }
-    const sev = clamp(-rvn / 12, 0, 1);
+    const sev = clamp(-rvn / 12, 0, 1); if (rvn < 0) ctx.vehicles?.hit?.(c, { nx, nz, vn: rvn });   // vehicles.js: crunch, sparks, damage on your car
     if (sev > 0.18 && T.t - (c.crashT || -9) > 0.8) crash(c, sev, nx, nz);
   }
 }

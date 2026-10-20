@@ -5,13 +5,13 @@
 // ground follow with ramp launch, circle-vs-AABB collisions. Cameras: first person (driver's seat / on the bike) and a
 // third-person chase cam (V key / CAM button) with wall avoidance. Running people over: ctx.ai.damage for local soldiers,
 // bus 'vehicleHit' {peerId, speed, damage, point} for remote players (net.js turns it into a hit).
-import { damageHit, updateDamage, isWrecked } from './vehicledamage.js';
+import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState } from './vehicledamage.js';
 import * as THREE from 'three';
 import { buildBike, buildRider, WHEEL_R, WHEELBASE, FRONT_Z, REAR_Z } from './vehicles/bike.js';
 import { buildJetski } from './vehicles/jetski.js';
 import { createWaterFX } from './vehicles/waterfx.js';
 import { BoxGrid, resolveCircle, rectBlocked, segmentHit } from './vehicles/collide.js';
-import { carGeometries, carMaterials, carSpec, carEye, carInterior, wheelGeometry, wheelLayout } from './world/carkit.js';
+import { carGeometries, carMaterials, carSpec, carEye, carInterior, wheelGeometry, wheelLayout, caliperGeometry, hideParkedCar, dropParkedCarBoxes, carBoxes, gaugeNeedle } from './world/carkit.js';
 import { hasCarModel, carModel } from './world/carmodels.js';
 import { buildBus, BUS } from './vehicles/bus.js';
 
@@ -124,21 +124,33 @@ function makeJetski(x, z, yaw, i = 0) {
 /** A drivable car from the shared car kit (geometry faces +x in the kit; vehicles face -z, so the kit is turned +90 deg). */
 function makeCar(x, z, yaw, kind = 'sedan', color = 0x22305c, yRef = 0) {
   if (!carSpec(kind) && kind !== 'bus') kind = 'sedan';
-  const geos = kind === 'bus' ? null : carGeometries(kind, { wheels: false }).geos, CM = carMaterials();
+  const CM = carMaterials();
   const group = new THREE.Group(), body = new THREE.Group(); group.add(body);
   const kit = new THREE.Group(); kit.rotation.y = Math.PI / 2; body.add(kit);     // kit frame (+x front) → vehicle frame (-z front)
   const meshes = []; const paint = CM.paint.clone(); paint.color = new THREE.Color(color);
   const lampR = CM.lampR.clone(), lampW = CM.lampW.clone(); lampR.emissive = new THREE.Color(0xff1a0a); lampR.emissiveIntensity = 0.08; lampW.emissive = new THREE.Color(0xfff0d0); lampW.emissiveIntensity = 0.05;
   const mat = { paint, lampR, lampW, glass: CM.glassSee || CM.glass };   // see-through: the cabin (and whoever's in it) shows
-  let cab, wheels = null, busKit = null;
+  let tyreR = 0.33, cab, wheels = null, busKit = null, panels = null, panes = null, geos = null;
   if (kind === 'bus') { const B = buildBus({ sign: 'NOT IN SERVICE', lite: !!C.lite }); busKit = B; kit.add(B.group); for (const m of B.meshes) if (m.parent !== B.interior) meshes.push(m); cab = { wheel: new THREE.Group() }; }
   else if (hasCarModel(kind)) { const mdl = carModel(kind, color); kit.add(mdl); mdl.traverse((o) => { if (o.isMesh && o.name !== 'aoShadow') meshes.push(o); }); cab = { wheel: new THREE.Group() }; }   // a real model (with its own cabin)
-  else { for (const [slot, g] of Object.entries(geos)) { if (!g) continue; const m = new THREE.Mesh(g, mat[slot] || CM[slot]); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; kit.add(m); meshes.push(m); }
+  else { const kitG = carGeometries(kind, { wheels: false, panels: true }), panelGeos = kitG.panels || {}; geos = kitG.geos;
+    for (const [slot, g] of Object.entries(geos)) { if (!g) continue; const m = new THREE.Mesh(g, mat[slot] || CM[slot]); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; kit.add(m); meshes.push(m); }
     cab = carInterior(kind, geos); kit.add(cab.group);
-    // the wheels: their own meshes on pivots (kit frame), so they roll with the distance driven and the fronts steer (visuals())
-    const lay = wheelLayout(kind), wg = wheelGeometry(0.33), sc = lay.r / 0.33;
+    // the split body (vehicledamage.js): each panel / pane on a pivot at its hinge, so it can hang, swing ajar or come off
+    panels = {}; panes = {};
+    for (const [n, g] of Object.entries(panelGeos)) { const glass = n.startsWith('glass'); g.computeBoundingBox(); const bb = g.boundingBox, ctr = bb.getCenter(new THREE.Vector3());
+      const hinge = n.startsWith('door') ? new THREE.Vector3(bb.max.x, ctr.y, ctr.z) : n === 'hood' ? new THREE.Vector3(bb.min.x, bb.max.y, 0) : n === 'trunk' ? new THREE.Vector3(bb.max.x, bb.max.y, 0) : ctr.clone();
+      const doorOf = glass && /^glass[FR][LR]$/.test(n) ? 'door' + n.slice(5) : null, host = doorOf && panels[doorOf] ? panels[doorOf].pivot : null;
+      let pivot = host; if (!pivot) { pivot = new THREE.Group(); pivot.position.copy(hinge); pivot.userData.home = hinge.clone(); kit.add(pivot); }
+      const m = new THREE.Mesh(g, glass ? mat.glass : paint); m.position.copy(pivot.userData.home).negate(); m.castShadow = !glass; m.receiveShadow = true; m.userData.surface = glass ? 'glass' : 'metal'; pivot.add(m); meshes.push(m);
+      if (glass) { m.userData.pane = true; panes[n] = { mesh: m, ctr, state: 0 }; if (doorOf && panels[doorOf]) (panels[doorOf].glass ||= []).push(n); }
+      else { const shell = cab.panelShells?.[n]; if (shell) { shell.removeFromParent(); shell.position.copy(m.position); pivot.add(shell); }
+        panels[n] = { mesh: m, shell, pivot, ctr, state: 0 }; } }
+    // the wheels: their own meshes on pivots (kit frame), so they roll with the distance driven and the fronts steer (visuals()); the calipers stay put on the pivot
+    const lay = wheelLayout(kind), wg = wheelGeometry(lay.r, lay.style); tyreR = lay.r;
     wheels = lay.wheels.map((w) => { const pivot = new THREE.Group(); pivot.position.set(w.x, w.y, w.z); kit.add(pivot); const flip = new THREE.Group(); if (w.side < 0) flip.rotation.y = Math.PI; pivot.add(flip);
-      const spin = new THREE.Group(); spin.scale.setScalar(sc); flip.add(spin); for (const slot of ['rubber', 'rim', 'trim']) { const m = new THREE.Mesh(wg[slot], CM[slot]); m.castShadow = slot === 'rubber'; m.userData.surface = 'metal'; spin.add(m); meshes.push(m); }
+      const spin = new THREE.Group(); flip.add(spin); for (const slot of ['rubber', 'rim', 'trim']) { const m = new THREE.Mesh(wg[slot], CM[slot]); m.castShadow = slot === 'rubber'; m.userData.surface = 'metal'; m.userData.noDent = true; spin.add(m); meshes.push(m); }
+      const cal = new THREE.Mesh(caliperGeometry(lay.r, w.x > 0 ? 1 : -1), CM.caliper); cal.userData.noDent = true; flip.add(cal);
       return { pivot, spin, front: w.x > 0, side: w.side }; }); }
   const sp = carSpecFor(kind);
   // the bus and the real models have no wheel of ours in their cabin: an invisible one where the driver's hands go (VR grabs it:
@@ -147,7 +159,7 @@ function makeCar(x, z, yaw, kind = 'sedan', color = 0x22305c, yRef = 0) {
   const headlight = new THREE.SpotLight(0xfff2d8, 0, 55, 0.5, 0.5, 1.4); headlight.position.set(0, 0.8, -sp.hz + 0.1); headlight.target.position.set(0, 0, -16); group.add(headlight); group.add(headlight.target); headlight.visible = false;
   const lens = { material: lampW };
   const dummy = new THREE.Group();
-  const car = { group, body, fork: dummy, wheelF: dummy, wheelR: dummy, carWheels: wheels, busKit, headlight, lens, lampR, meshes, kind, color, steerWheel: cab.wheel, cabin: cab.group || null, ...baseState(x, z, yaw, yRef), spec: sp };
+  const car = { group, body, fork: dummy, wheelF: dummy, wheelR: dummy, carWheels: wheels, busKit, headlight, lens, lampR, meshes, kind, color, steerWheel: cab.wheel, cabin: cab.group || null, kit, panels, panes, tyreR, needles: cab.needles || null, mass: massOf(kind), ...baseState(x, z, yaw, yRef), spec: sp };
   group.position.copy(car.pos); group.rotation.y = yaw;
   for (const m of meshes) { m.userData.vehicle = car; C.raycastTargets.push(m); }
   C.scene.add(group); parkBox(car); C.colliders.push(car.box); S.bikes.push(car); rebuildGrids();
@@ -288,6 +300,86 @@ function remoteBump(v) {
       if (d >= r || d < 1e-4) continue; const nx = dx / d, nz = dz / d, push = r - d; v.pos.x += nx * push; v.pos.z += nz * push;
       const vn = v.vel.x * nx + v.vel.z * nz; if (vn < 0) { v.vel.x -= 1.5 * vn * nx; v.vel.z -= 1.5 * vn * nz; v.vel.multiplyScalar(0.8); v.hitT = Math.max(v.hitT, 0.15); } } }
 }
+// ---------- car vs car: momentum by mass, the other car shoved / spun, damage on both ----------
+// kg: a hit shares speed by mass (a bus barely notices a sedan; a Lada bounces off an SUV)
+const MASS = { bus: 12000, van: 2400, suv: 2100, muscle: 1650, coupe: 1400, volga: 1450, lada: 1050, moskvich: 1000 }, MASS_CAR = 1500, MASS_BIKE = 230;
+const massOf = (kind) => MASS[kind] || MASS_CAR;
+const SPEEDO_MAX = 71, GEAR_SPAN = 9;   // m/s at the end of the 160 mph dial; m/s of road speed per gear for the tach
+const SHOVE_E = 0.15, SPIN_K = 0.9, SLIDE_DECEL = 6.5, SPIN_DAMP = 2.5, PROMOTE_MAX = 4, PROMOTE_MAX_LITE = 2;   // restitution car on car; yaw from an off-centre hit; a shoved car's tyre scrub (m/s²) and spin decay; parked cars made live at once
+/** who owns a collider box: a vehicle of ours ({ veh }) or a parked kit car ({ parked }), rebuilt when either list changes */
+function ownerOf(box) {
+  const list = C.world?.parkedCars || [], key = S.bikes.length * 100003 + list.length;
+  if (S.ownKey !== key || !S.owners) { S.ownKey = key; S.owners = new Map(); for (const b of S.bikes) if (b.spec.car) S.owners.set(b.box, { veh: b }); for (const c of list) if (!c.gone) for (const bx of carBoxes(c)) S.owners.set(bx, { parked: c }); }
+  return S.owners.get(box) || null;
+}
+/** a parked kit car (instanced) becomes a live car of ours where it stands: it can be shoved, dented, shot apart. Capped (oldest
+ *  untouched ones are not reverted: a live car stays live). Local only: friends keep seeing it parked. */
+function promote(c) {
+  if (c.gone || c.live) return c.live || null; if ((S.promoted || 0) >= (C.lite ? PROMOTE_MAX_LITE : PROMOTE_MAX)) return null;
+  S.promoted = (S.promoted || 0) + 1; hideParkedCar(c); dropParkedCarBoxes(C, c);
+  const car = makeCar(c.x, c.z, (c.ry || 0) - Math.PI / 2, carSpec(c.kind) ? c.kind : 'sedan', c.color ?? 0x22305c, c.y || 0); c.live = car; S.owners = null; return car;
+}
+/** my car hit a box that is a car: the wall response already ran; give the speed back by mass and push the other one */
+function shove(v, hitN, vn) {
+  const o = ownerOf(hitN.box); if (!o) return; const other = o.veh || promote(o.parked); if (!other || other === v) return;
+  const mA = v.mass || (v.spec.car ? MASS_CAR : MASS_BIKE), mB = other.mass || MASS_CAR, k = mA / (mA + mB), nx = hitN.nx, nz = hitN.nz;
+  const cur = v.vel.x * nx + v.vel.z * nz, want = vn * k - vn * SHOVE_E * (1 - k); v.vel.x += nx * (want - cur); v.vel.z += nz * (want - cur);   // I keep the common speed (a light car bounces off a heavy one)
+  const dv = -vn * k * (1 + SHOVE_E); other.vel.x -= nx * dv; other.vel.z -= nz * dv;
+  // an off-centre hit spins it: lever arm of the contact about its centre, across the push
+  const rx = hitN.px - other.pos.x, rz = hitN.pz - other.pos.z; other.spinV = (other.spinV || 0) + SPIN_K * (rx * -nz - rz * -nx) * dv / Math.max(1, other.spec.hz * other.spec.hz) * 0.5;
+  if (other.parked) { other.sliding = true; }
+  const now = performance.now(); if (now - (other.crashT || 0) > 400 && dv > 1.5) { other.crashT = now; try { damageHit(C, other, dv * 1.6, _v.set(hitN.px, other.pos.y + 0.6, hitN.pz).clone(), new THREE.Vector3(-nx, 0, -nz)); } catch (e) { console.warn('[vehicles] damage other', e); } }
+}
+/** a shoved car with nobody in it: slides on scrubbing tyres, spins down, stops against walls; back into the grid when it stops */
+function slide(v, dt) {
+  const sp = v.spec, s = Math.hypot(v.vel.x, v.vel.z);
+  if (s < 0.05 && Math.abs(v.spinV || 0) < 0.02) { v.sliding = false; v.vel.set(0, 0, 0); v.spinV = 0; v.speed = 0; parkBox(v); rebuildGrids(); S.owners = null; return; }
+  const d = Math.min(s, SLIDE_DECEL * dt); if (s > 0) v.vel.multiplyScalar((s - d) / s);
+  v.heading += (v.spinV || 0) * dt; v.spinV = (v.spinV || 0) * Math.exp(-SPIN_DAMP * dt);
+  fwdOf(v.heading, _f); let px = v.pos.x + v.vel.x * dt, pz = v.pos.z + v.vel.z * dt;
+  for (const az of sp.circles) { const ax = px - _f.x * az, azz = pz - _f.z * az; if (resolveCircle(S.grid, ax, azz, sp.bodyR, v.pos.y + sp.band, v.pos.y + sp.h, v.box, _res)) { px += _res.x - ax; pz += _res.z - azz; const vn = v.vel.x * _res.nx + v.vel.z * _res.nz; if (vn < 0) { v.vel.x -= _res.nx * vn * 1.2; v.vel.z -= _res.nz * vn * 1.2; } } }
+  v.pos.x = px; v.pos.z = pz; v.speed = Math.hypot(v.vel.x, v.vel.z); parkBox(v);
+  v.group.position.copy(v.pos); v.group.rotation.set(0, v.heading, 0);
+}
+/** an AI car (traffic.js, belt.js, cops: they resolve their own push) hit the car I'm driving: crunch, sparks, shake, damage */
+function aiHit(other, { nx = 0, nz = 0, vn = 0 } = {}) {
+  const v = S.mounted; if (!v?.spec.car || -vn < 1.5) return; const now = performance.now(); if (now - (v.crashT || 0) < 400) return; v.crashT = now;
+  const k = clamp(-vn / 16, 0, 1), px = v.pos.x - nx * v.spec.hx, pz = v.pos.z - nz * v.spec.hx, at = new THREE.Vector3(px, v.pos.y + 0.6, pz);
+  crunch(v, at, k); try { damageHit(C, v, -vn * (other?.bus ? 1.6 : 1), at, new THREE.Vector3(nx, 0, nz)); } catch (e) { console.warn('[vehicles] damage', e); }
+}
+/** the feel of a crash: crunch by impact speed, sparks + bits, a camera jolt and shake */
+function crunch(v, at, k) {
+  try { C.audio?.play?.('impact', { position: at, volume: 0.6 + k }); } catch {} try { C.audio?.play?.('impact_metal', { position: at, volume: 0.4 + k }); } catch {}
+  if (k > 0.45) try { C.audio?.play?.('glass', { position: at, volume: k }); } catch {}
+  try { crashFx(C, at, k, v.vel); } catch {}
+  if (v === S.mounted) { const p = C.player; if (p) { p.pitch += (Math.random() - 0.3) * 0.14 * k; p.yaw += (Math.random() - 0.5) * 0.12 * k; } v.hitT = Math.max(v.hitT || 0, 0.25 + 0.45 * k); }
+  v.suspV -= 2 * k;
+}
+/** a bullet hit something ('impact' from weapons.js): a car of ours, or a parked kit car (made live, then hit) */
+function onShot(e) {
+  const o = e?.object; if (!o || !e.point || !e.normal) return; const dir = e.dir || new THREE.Vector3();
+  const veh = o.userData?.vehicle; if (veh?.spec?.car) return damageShot(C, veh, o, e.point, e.normal, dir, e.damage);
+  if (!o.isInstancedMesh || e.instanceId == null || !/^cars:/.test(o.name)) return;
+  const list = C.world?.parkedCars || []; if (S.refKey !== list.length) { S.refKey = list.length; S.byRef = new Map(); for (const c of list) for (const r of c.refs || []) S.byRef.set(r.im.uuid + ':' + r.i, c); }
+  const c = S.byRef.get(o.uuid + ':' + e.instanceId); if (!c) return; const car = promote(c); if (!car) return;
+  car.group.updateMatrixWorld(true); damageShot(C, car, /:glass$/.test(o.name) ? 'glass' : null, e.point, e.normal, dir, e.damage);
+}
+/** coney's parked cars aren't raycast targets (instanced, too many): a shot from you is tested against their boxes here (ray
+ *  in each car's own frame), and the first one in front of whatever the bullet hit goes live and takes it */
+const SHOT_RANGE = 80, _ray = new THREE.Raycaster();
+function onPlayerShot(e) {
+  if (e?.who !== 'player' || e.melee || !e.origin || !e.dir) return; const o = e.origin, d = e.dir, far = e.hit ? o.distanceTo(e.hit) : SHOT_RANGE;
+  let best = null, bt = far;
+  for (const c of C.world?.parkedCars || []) { if (c.gone || c.live || !c.kind) continue; const dx = c.x - o.x, dz = c.z - o.z; if (dx * dx + dz * dz > SHOT_RANGE * SHOT_RANGE) continue;
+    const K = carSpec(c.kind) || carSpec('sedan'), cs = Math.cos(c.ry || 0), sn = Math.sin(c.ry || 0);
+    const lx = (o.x - c.x) * cs - (o.z - c.z) * sn, lz = (o.x - c.x) * sn + (o.z - c.z) * cs, ly = o.y - (c.y || 0), ux = d.x * cs - d.z * sn, uz = d.x * sn + d.z * cs, uy = d.y;   // into the kit frame
+    let t0 = 0, t1 = bt; for (const [p, u, h0, h1] of [[lx, ux, -K.len / 2, K.len / 2], [ly, uy, K.clr, K.roof], [lz, uz, -K.w / 2, K.w / 2]]) { if (Math.abs(u) < 1e-9) { if (p < h0 || p > h1) { t0 = 1e9; break; } continue; } let a = (h0 - p) / u, b = (h1 - p) / u; if (a > b) [a, b] = [b, a]; t0 = Math.max(t0, a); t1 = Math.min(t1, b); if (t0 > t1) break; }
+    if (t0 <= t1 && t0 < bt) { bt = t0; best = c; } }
+  if (!best) return; const car = promote(best); if (!car) return; car.group.updateMatrixWorld(true);
+  _ray.set(o, d); _ray.far = far + 1; const h = _ray.intersectObjects(car.meshes.filter((m) => m.visible), false)[0]; if (!h) return;
+  const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : d.clone().negate(); if (n.dot(d) > 0) n.negate();
+  damageShot(C, car, h.object, h.point, n, d, C.weapons?.spec?.damage ?? 30);
+}
 function simulate(v, dt, thr, brk, hard, steer) {
   const n = Math.max(1, Math.ceil(dt / MAX_STEP - 1e-6)), h = dt / n;
   v.surfT -= dt; if (v.surfT <= 0) { v.surfT = 0.1; v.surf = surfaceUnder(v); }
@@ -336,7 +428,7 @@ function stepVeh(v, dt, thr, brk, hard, steer) {
   const y0 = p.y + sp.band, y1 = p.y + sp.h;
   for (let i = 0; i < sp.circles.length; i++) {
     const az = sp.circles[i]; const ax = px - _f.x * az, azz = pz - _f.z * az;
-    if (resolveCircle(S.grid, ax, azz, sp.bodyR, y0, y1, v.box, _res)) { px += _res.x - ax; pz += _res.z - azz; if (!hitN || _res.depth > hitN.depth) hitN = { nx: _res.nx, nz: _res.nz, depth: _res.depth }; }
+    if (resolveCircle(S.grid, ax, azz, sp.bodyR, y0, y1, v.box, _res)) { px += _res.x - ax; pz += _res.z - azz; if (!hitN || _res.depth > hitN.depth) hitN = { nx: _res.nx, nz: _res.nz, depth: _res.depth, box: _res.box, px: _res.x - _res.nx * sp.bodyR, pz: _res.z - _res.nz * sp.bodyR }; }
   }
   if (hitN) {
     const vn = vel.x * hitN.nx + vel.z * hitN.nz;
@@ -356,6 +448,8 @@ function stepVeh(v, dt, thr, brk, hard, steer) {
         const away = Math.atan2(-hitN.nx, -hitN.nz); v.heading += wrap(away - v.heading) * 0.15 * severity;
       }
       v.suspV -= 1.5 * severity; v.hitT = Math.max(v.hitT, 0.25 * severity + 0.05);
+      v.lastHit = { x: hitN.px, z: hitN.pz, nx: hitN.nx, nz: hitN.nz, t: performance.now() };   // where it hit, for the crash damage + sparks (update)
+      if (hitN.box && v.spec.car && v === S.mounted) shove(v, hitN, vn);
       if (severity > 0.25 && v === S.mounted) { try { C.audio?.play?.('impact', { position: p, volume: severity }); } catch {} }
     }
   }
@@ -489,9 +583,10 @@ function visuals(v, dt, thr, brk, hard) {
   const squat = sp.car ? clamp(v.aLong * 0.0035, -0.05, 0.035) : 0;
   v.body.position.y = v.susp; v.body.rotation.set(v.tPitch - v.suspV * 0.04 + squat, 0, -v.lean + v.tRoll, 'YXZ');
   v.fork.rotation.y = -v.steer * 0.85; v.wheelF.rotation.x = -v.spin; v.wheelR.rotation.x = -v.spin;
-  if (v.carWheels) for (const w of v.carWheels) { w.spin.rotation.z = (w.side > 0 ? -1 : 1) * v.spin * WHEEL_R / 0.33; if (w.front) w.pivot.rotation.y = -v.steer * 0.55; }   // cars: roll + steer
+  if (v.carWheels) for (const w of v.carWheels) { w.spin.rotation.z = (w.side > 0 ? -1 : 1) * v.spin * WHEEL_R / (v.tyreR || 0.33); if (w.front) w.pivot.rotation.y = -v.steer * 0.55; }   // cars: roll + steer
   if (v.busKit) v.busKit.roll(v.spin * WHEEL_R / 0.5, -v.steer * 0.45);
   if (v.steerWheel) v.steerWheel.rotation.x = clamp(v.steer * 4.5, -2.6, 2.6);
+  if (v.needles) { v.needles.speed.rotation.x = gaugeNeedle(Math.abs(v.fwdSpeed) / SPEEDO_MAX); v.needles.rpm.rotation.x = gaugeNeedle(0.12 + 0.55 * v.throttle + 0.3 * ((Math.abs(v.fwdSpeed) % GEAR_SPAN) / GEAR_SPAN)); }   // the dash: speedo, and a tach that climbs through each gear
   v.brakeK = damp(v.brakeK, (brk > 0 && v.fwdSpeed > 0.3) || hard ? 1 : 0, 20, dt);
   if (v.lampR) v.lampR.emissiveIntensity = 0.45 + 2.2 * v.brakeK;
 }
@@ -693,6 +788,8 @@ export async function init(ctx) {
   if (ctx.safeMode) S.grid = new BoxGrid(SAFE_GRID_CELL);   // safe mode (ctx.js): coarser cells, fewer grid entries over ~70k colliders
   try { placeBikes(); } catch (e) { console.error('[vehicles] placement failed', e); }
   ctx.bus.on('ui:mount', () => { S.uiMount = true; });
+  ctx.bus.on('impact', (e) => { try { onShot(e); } catch (err) { console.warn('[vehicles] shot', err); } });   // bullets into cars: holes, glass, panels
+  ctx.bus.on('shot', (e) => { try { onPlayerShot(e); } catch (err) { console.warn('[vehicles] shot', err); } });
   try { buildUI(ctx); } catch (e) { console.warn('[vehicles] ui', e); }
   S.chase = !!ctx.isTouch && ctx.qs?.get?.('chase') !== '0';   // phones start in the chase cam (small screen, cabin view is cramped); V / CAM toggles
   const api = {
@@ -702,6 +799,10 @@ export async function init(ctx) {
     get chase() { return S.chase; }, set chase(v) { setChase(v); }, toggleCamera: () => setChase(!S.chase),
     /** Touch hook: tap = the same as pressing F (enter / exit / steal). */
     use: () => { S.uiMount = true; },
+    /** an AI car hit the car you drive (traffic.js etc. resolve the push): other = the AI car, { nx, nz } from it to you, vn the closing speed (< 0) */
+    hit: (other, impulse) => aiHit(other, impulse),
+    /** qa: damage of a car (or the one you drive), make a parked car live */
+    qaDamage: (b) => damageState(b || S.mounted), qaPromote: (c) => promote(c),
     spawnCar: (x, z, yaw, kind, color, y) => makeCar(x, z, yaw, kind, color, y ?? ctx.player?.position.y ?? 0),
     qaSpawn(x, z, yaw = 0, y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeBike(x, z, yaw, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
     qaMount() { const b = nearestBike(); if (!b) return false; return mount(b); },
@@ -774,6 +875,7 @@ function speedFov(bike) {
 const CABIN_LOD = 35;
 function cabinLod(ctx) { const cam = ctx.camera?.position; if (!cam) return; for (const v of S.bikes) if (v.cabin) v.cabin.visible = v === S.mounted || Math.hypot(v.pos.x - cam.x, v.pos.z - cam.z) < CABIN_LOD; }
 export function update(dt, ctx) {
+  for (const b of S.bikes) if (b.sliding && b !== S.mounted && dt > 0) slide(b, Math.min(dt, 0.05));
   try { updateDamage(ctx, S.bikes, dt); } catch (e) { if (!S.dmgErr) { S.dmgErr = 1; console.error('[vehicles] damage', e); } }
   const p = ctx.player; if (!p) return;
   const input = ctx.input;
@@ -840,11 +942,11 @@ export function update(dt, ctx) {
   remoteBump(bike);   // friends' cars are solid to yours (each client drives its own; this keeps them from passing through each other)
   runOver(bike, dt);
   { const drop = (bike.lastSpd ?? bike.speed) - bike.speed; bike.lastSpd = bike.speed;   // a crash: lost a lot of speed in one frame against something solid
-    if (drop > 6 && !bike.air && performance.now() - (bike.crashT || 0) > 600) { bike.crashT = performance.now(); const k = Math.min(1, drop / 20);
-      try { C.audio?.play?.('impact', { position: bike.pos, volume: 0.6 + k }); } catch {} try { C.audio?.play?.('glass', { position: bike.pos, volume: k }); } catch {}
-      const p = C.player; if (p) { p.pitch += (Math.random() - 0.3) * 0.12 * k; p.yaw += (Math.random() - 0.5) * 0.1 * k; } bike.suspV -= 2 * k; bike.hitT = Math.max(bike.hitT || 0, 0.25);
+    if (drop > 6 && !bike.air && performance.now() - (bike.crashT || 0) > 600) { bike.crashT = performance.now(); const k = Math.min(1, drop / 20), H = bike.lastHit && performance.now() - bike.lastHit.t < 200 ? bike.lastHit : null;
+      const at = H ? new THREE.Vector3(H.x, bike.pos.y + 0.6, H.z) : bike.pos.clone().setY(bike.pos.y + 0.6);
+      crunch(bike, at, k);
       if (!bike.spec.car && drop > 12) C.hud?.toast?.('*CRUNCH* …you ate the bumper', 1400);
-      if (bike.spec.car) try { damageHit(C, bike, drop); } catch (e) { console.warn('[vehicles] damage', e); } } }   // dents, lights out, smoke, fire, boom (vehicledamage.js)
+      if (bike.spec.car) try { damageHit(C, bike, drop, H ? at : null, H ? new THREE.Vector3(H.nx, 0, H.nz) : null); } catch (e) { console.warn('[vehicles] damage', e); } } }   // dents, panels, glass, lights out, smoke, fire, boom (vehicledamage.js)
   speedFov(bike);
   S.revT -= dt;
   if (thr > 0 && S.revT <= 0) { S.revT = 1.6; if (!sp.car) try { ctx.audio?.play?.('bike_rev', { position: bike.pos, volume: 0.5 + 0.5 * clamp(bike.speed / sp.max, 0, 1) }); } catch {} }
