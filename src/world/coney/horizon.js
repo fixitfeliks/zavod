@@ -22,6 +22,7 @@ import * as THREE from 'three';
 import { OSM } from './osm.js';
 import { YARD } from './yard.js';
 import { inCreek } from './realism.js';
+import { EAST_TOWER } from './mats.js';
 
 const D2R = Math.PI / 180;
 const LAT0 = 40.5745, LON0 = -73.98, KX = 111320 * Math.cos(LAT0 * D2R), KY = 110540, CT = Math.cos(8.33 * D2R), ST_ = Math.sin(8.33 * D2R);
@@ -763,7 +764,7 @@ function buildCycle(world, fw) {
   if (M.lampHead && M.lampHead.emissive && M.lampHead.emissive.getHex() === 0) { M.lampHead.emissive.set(0xffe0b0); boost.find((b) => b.m === M.lampHead).e0 = 0.05; }
   // unlit (MeshBasic) surf foam would glow white at night: dim it with the light level
   const foam = []; scene.traverse((o) => { if (o.isMesh && /^surf\d$/.test(o.name) && o.material?.color) foam.push({ m: o.material, c0: o.material.color.clone() }); });
-  const nightWin = ['hBrickWin', 'hCreamWin', 'hBrickTop'].map((k) => M[k]).filter((m) => m && m.emissiveMap);
+  const nightWin = ['hBrickWin', 'hCreamWin', 'hBrickTop', ...Object.values(EAST_TOWER)].map((k) => M[k]).filter((m) => m && m.emissiveMap);
   const moonDir = new THREE.Vector3(0.55, 0.55, 0.62).normalize(); sky.u.uMoonDir.value.copy(moonDir);
   const sunH = new THREE.Vector3(-0.989, 0, -0.145);    // due west in the map frame (the sun sets behind the Narrows)
   const tmp = {}; const lerpKeys = (s) => { let i = 0; while (i < KEYS.length - 2 && s > KEYS[i + 1].s) i++; const a = KEYS[i], b = KEYS[i + 1]; const f = Math.max(0, Math.min(1, (s - a.s) / (b.s - a.s))); for (const k in a) { if (k === 's') continue; if (a[k].isColor) (tmp[k] || (tmp[k] = new THREE.Color())).copy(a[k]).lerp(b[k], f); else tmp[k] = a[k] + (b[k] - a[k]) * f; } return tmp; };

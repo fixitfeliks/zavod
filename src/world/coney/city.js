@@ -4,16 +4,20 @@
 // hydrants, parking signs, zebra crosswalks) and the elevated subway viaducts running into the terminal. CONEY agent.
 import * as THREE from 'three';
 import { Batch, boxGeo, scratchBox } from '../sbu/geo.js';
-import { facade, block } from '../sbu/buildings.js';
+import { facade, block, roofKit } from '../sbu/buildings.js';
+import { eastTowerMats, facadeBoxUV, boxFaces, FAC } from './mats.js';
 import { OSM, PLAY } from './osm.js';
 import { BW } from './shore.js';
 import { ribbon, walk, footprint, footprintAngle, decompose, segDist, segDist1, bbox, cen, pip } from '../osmkit.js';
-import { placeCars, parkedCarBoxes, parkMix } from '../carkit.js';
+import { placeCars, parkedCarBoxes, parkMix, CAR_COLORS } from '../carkit.js';
 import { BUS_STOPS } from './traffic.js';
 import { SURF_HH, stationClear } from './stillwell.js';
 import { w8Lots, inW8Site } from './realism.js';
 import { isSchool, buildSchool } from './school.js';   // no parking at the bus stops
 
+// own seeded PRNG (never world.R): S1's lot cars are new ground this build didn't cover on main, and drawing them from world.R
+// would shift every call after them, including housing.js's buildHousing() a few lines later in coney.js
+function mulberry(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
 /** toGPU(): coney.js hands the meshes built so far to the GPU (main.js ctx.gpuStream) once the buildings are flushed */
 export function buildCity(world, M, toGPU = () => 0) {
@@ -67,13 +71,24 @@ export function buildCity(world, M, toGPU = () => 0) {
   const cars = [], PARK = parkMix(world.ctx), LOT = parkMix(world.ctx, ['sedan', 'suv', 'hatch', 'van', 'muscle', 'coupe', 'e34']);
   for (const r of OSM.r) { if (r.w < 9 || r.w > 16) continue; walk(r.p, 6.5, (x, z, dx, dz) => { if (R() < 0.6) return; if (BUS_STOPS.some((b) => Math.hypot(b[1] - x, b[2] - z) < 18)) return; if (!(x > PLAY.x0 && x < PLAY.x1 && z > PLAY.z0 && z < BW.z0 - 5)) return; for (const s of [-1, 1]) { if (R() < 0.4) continue; const off = r.w / 2 - 1.3, c = { x: x - dz * s * off, z: z + dx * s * off, ry: Math.atan2(dx, dz) - Math.PI / 2 + (s > 0 ? 0 : Math.PI), kind: PARK(R) }; if (!cars.some((o) => carsOverlap(o, c))) cars.push(c); } }); }   // two streets meeting (or one OSM way drawn twice) put kerb cars 2.4 m apart
   const w8 = new Set(w8Lots());   // the W 8 St lots round the DMV and the firehouse (coney/realism.js): busy, even outside PLAY
-  for (const p of OSM.l) { const q = bbox(p), busy = w8.has(p); if (!busy && !(q.x1 > PLAY.x0 && q.x0 < PLAY.x1 && q.z1 > PLAY.z0 && q.z0 < PLAY.z1)) continue;
+  for (const p of OSM.l) { const q = bbox(p), isW8 = w8.has(p), inPlay = q.x1 > PLAY.x0 && q.x0 < PLAY.x1 && q.z1 > PLAY.z0 && q.z0 < PLAY.z1, inS1Lot = !isW8 && !inPlay && q.x1 > S1.x0 && q.x0 < S1.x1 && q.z1 > S1.z0 && q.z0 < S1.z1, busy = isW8 || inS1Lot;   // inS1Lot: only lots main skipped (a lot that reaches into PLAY keeps world.R)
+    if (!busy && !(q.x1 > PLAY.x0 && q.x0 < PLAY.x1 && q.z1 > PLAY.z0 && q.z0 < PLAY.z1)) continue;
+    // S1's own lots (east of the Luna Park Houses, outside PLAY): a local PRNG, never world.R, so this never shifts the housing.js seed
+    const rnd = inS1Lot ? mulberry(((q.x0 * 73856093) ^ (q.z0 * 19349663)) | 0) : R;
     // a lot polygon can run under a building OSM maps separately (or one housing.js / school.js builds): no car inside its walls
     const walls = ctx.colliders.filter((b) => b.max.y - b.min.y > 1.4 && b.min.y < 1 && b.max.x > q.x0 && b.min.x < q.x1 && b.max.z > q.z0 && b.min.z < q.z1), inWall = (x, z) => walls.some((b) => x > b.min.x - 1.5 && x < b.max.x + 1.5 && z > b.min.z - 3 && z < b.max.z + 3);   // ry = ±90°: long axis along z
-    for (let x = q.x0 + 3; x < q.x1 - 3; x += 2.8) for (let z = q.z0 + 4; z < q.z1 - 3; z += 7) if (pip(x, z, p) && [[-1.3, -2.8], [1.3, -2.8], [-1.3, 2.8], [1.3, 2.8]].every(([u, v]) => pip(x + u, z + v, p)) && !(busy && inW8Site(x, z, 3)) && R() < (busy ? 0.4 : 0.25) && !inWall(x, z)) cars.push({ x, z, ry: Math.PI / 2 * (R() < 0.5 ? 1 : -1), kind: LOT(R) }); }
+    for (let x = q.x0 + 3; x < q.x1 - 3; x += 2.8) for (let z = q.z0 + 4; z < q.z1 - 3; z += 7) if (pip(x, z, p) && [[-1.3, -2.8], [1.3, -2.8], [-1.3, 2.8], [1.3, 2.8]].every(([u, v]) => pip(x + u, z + v, p)) && !(busy && inW8Site(x, z, 3)) && rnd() < (busy ? 0.4 : 0.25) && !inWall(x, z)) cars.push({ x, z, ry: Math.PI / 2 * (rnd() < 0.5 ? 1 : -1), kind: LOT(rnd), cover: inS1Lot ? rnd() < 0.12 : undefined, color: inS1Lot ? CAR_COLORS[(rnd() * CAR_COLORS.length) | 0] : undefined, s1: inS1Lot }); }
   // every corner of the stall inside the lot, not just the centre: the lot's fence (realism.js, lunacourts.js) runs on its edge
-  placeCars(world, cars, { raycast: false });
-  for (const c of cars) { parkedCarBoxes(world, c); if (R() < 0.12) world.cover(c.x, c.z + 2, 0, 1); }
+  // S1's lot cars go in their own placeCars pass with a local PRNG as world.R: placeCars draws per-car randomness from world.R,
+  // and these cars are new on this build, so drawing them from the shared stream would shift what housing.js gets
+  // ...and they're placed on the first frame, after the whole map (Luna Park included) is built: their colliders and cover spots
+  // would otherwise change what later builders skip, and with it how many world.R draws they make
+  const s1Cars = cars.filter((c) => c.s1), mainCars = cars.filter((c) => !c.s1);
+  placeCars(world, mainCars, { raycast: false });
+  if (s1Cars.length) { let done = false; world.updaters.push(() => { if (done) return; done = true;
+    placeCars({ ...world, R: mulberry(0x51e1) }, s1Cars, { raycast: false });
+    for (const c of s1Cars) { parkedCarBoxes(world, c); if (c.cover) world.cover(c.x, c.z + 2, 0, 1); } }); }
+  for (const c of mainCars) { parkedCarBoxes(world, c); if (R() < 0.12) world.cover(c.x, c.z + 2, 0, 1); }
 }
 
 function ribbonOffset(pts, off, w, y) { // thin ribbon offset sideways from a polyline (paint lines)
@@ -89,12 +104,32 @@ const STYLE = {
 
 // the tall towers round Luna Park, by where they stand (Coney Island / Gravesend Houses and Surfside west of Stillwell are buff
 // and red-brown brick; east toward Brighton the Trump Village / Brightwater / Oceana high-rises add white concrete with balcony
-// bands). Picked per building from its position, so it never changes between loads. far: the cheap backdrop tile that matches
+// bands, and the Warbasse-style slab blocks between Neptune Ave and Sea Breeze Ave add brown/tan brick). Picked per building from
+// its position, so it never changes between loads. far: the cheap backdrop tile that matches
 const TOWER_LOOK = { brickBuff: 'towerFarBuff', brickRust: 'towerFarRed', brickStaller: 'towerFarBrown', concreteWhite: 'towerFarWhite' };
 function towerWall(x, z) {
   const k = ((Math.sin(x * 12.9898 + z * 78.233) * 43758.5453) % 1 + 1) % 1;
-  const mix = x > 380 ? [['concreteWhite', 0.45], ['brickRust', 0.3], ['brickBuff', 0.25]] : x < -100 ? [['brickBuff', 0.45], ['brickRust', 0.35], ['concreteWhite', 0.2]] : [['brickBuff', 0.4], ['brickRust', 0.35], ['concreteWhite', 0.25]];
+  // east of the Luna Park Houses (x > 380): the reference photo splits north/south of roughly Sea Breeze Ave (z ~ -200) into a
+  // dense brown/tan brick cluster (Neptune Av side) and tall white/light-grey towers (Sea Breeze Av side, nearer the beach)
+  const mix = x > S1.x0 ? (z < -200 ? [['brickStaller', 0.65], ['brickRust', 0.2], ['brickBuff', 0.15]] : [['concreteWhite', 0.7], ['brickBuff', 0.2], ['brickRust', 0.1]])
+    : x < -100 ? [['brickBuff', 0.45], ['brickRust', 0.35], ['concreteWhite', 0.2]] : [['brickBuff', 0.4], ['brickRust', 0.35], ['concreteWhite', 0.25]];
   let acc = 0; for (const [key, p] of mix) { acc += p; if (k < acc) return key; } return mix[0][0];
+}
+// S1, east of the Luna Park Houses (W 8 St to Ocean Pkwy, Surf Av to Neptune Av, by footprint centroid): the backdrop towers get the
+// pre-war facade kit (mats.js eastTowerMats) instead of the flat towerFar tile. Same box collider and roofKit call as block(), so
+// world.R and the colliders are exactly as before; the per-building tile offset comes from the centroid, not from world.R.
+const S1 = { x0: 383, x1: 1000, z0: -545, z1: 60 };
+const S1_SLAB = 0.18, S1_SLAB_H = 0.11;   // m: the white high-rises' floor slab edge, how far it stands out / half its height
+const inS1 = (x, z) => x > S1.x0 && x < S1.x1 && z > S1.z0 && z < S1.z1;
+function s1Block(B, world, M, tw, r, h, hvac, ox, oz) {
+  const look = tw || 'brickRust', key = eastTowerMats(world, M)[look], w = r.x1 - r.x0, d = r.z1 - r.z0;
+  const k = ((Math.sin((ox + 1000) * 12.9898 + oz * 78.233) * 43758.5453) % 1 + 1) % 1, du = ((k * 64) | 0) % FAC.TB / FAC.TB, dv = ((k * 997) | 0) % FAC.TF / FAC.TF;   // whole bays / storeys: the lit flats differ per tower
+  const g = boxFaces(facadeBoxUV(new THREE.BoxGeometry(w, h, d), w, h, d), [0, 1, 4, 5]), uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) + du, uv.getY(i) + dv);
+  g.translate((r.x0 + r.x1) / 2, h / 2, (r.z0 + r.z1) / 2); B.add(key, g, { uv: false });
+  B.world.box([r.x0, 0, r.z0], [r.x1, h, r.z1]);
+  if (look === 'concreteWhite') for (let y = FAC.FL; y < h - 1; y += FAC.FL) B.box('cornice', [r.x0 - S1_SLAB, y - S1_SLAB_H, r.z0 - S1_SLAB], [r.x1 + S1_SLAB, y + S1_SLAB_H, r.z1 + S1_SLAB], { collide: false });
+  roofKit(B, r.x0, r.z0, r.x1, r.z1, h, 'roof', B.world.R, hvac);
 }
 // a rotated footprint's rects overshoot its skewed edges (decompose works on a grid): anything tall enough to reach an el car's
 // floor is trimmed back this far from every elevated track centreline, so a train never runs through a wall or cornice
@@ -127,6 +162,7 @@ function building(T, world, M, b) {
     const w = r.x1 - r.x0, d = r.z1 - r.z0;
     const tw = s === 'tower' || (s === 'apart' && h > 25) ? towerWall(ox, oz) : null;   // the tall ones: the Luna Park palette
     if (w < 3 || d < 3) { block(B, tw || 'brickRed', r.x0, r.z0, r.x1, r.z1, h, { hvac: 0 }); return; }
+    if (!b.play && (s === 'tower' || s === 'apart' || s === 'rowhouse') && inS1(ox, oz)) { s1Block(B, world, M, tw, r, h, s === 'tower' ? 1 : 0, ox, oz); return; }
     if (!b.play && (s === 'tower' || s === 'apart' || s === 'rowhouse')) { block(B, tw ? TOWER_LOOK[tw] : 'towerFarRed', r.x0, r.z0, r.x1, r.z1, h, { hvac: s === 'tower' ? 1 : 0 }); return; }
     if (s === 'tower' || s === 'apart' || s === 'civic') {
       const st = STYLE[s]; const floors = Math.max(1, Math.round(h / st.storey));

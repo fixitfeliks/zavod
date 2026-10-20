@@ -556,3 +556,19 @@ export function boxFaces(g, faces) { const idx = g.index.array, keep = []; for (
 /** world-metre UVs on a box already translated into place: party walls tile their brick continuously */
 export function metreUV(g, su = FAC.TB * FAC.BAY, sv = FAC.TF * FAC.FL) { const p = g.attributes.position, n = g.attributes.normal, uv = g.attributes.uv;
   for (let i = 0; i < uv.count; i++) { const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)); uv.setXY(i, (ax > 0.5 ? p.getZ(i) : p.getX(i)) / su, (ay > 0.5 ? p.getZ(i) : p.getY(i)) / sv); } return g; }
+
+// ---- S1, east of the Luna Park Houses (W 8 St to Ocean Pkwy, Surf Av to Neptune Av): the far towers' walls on the facade kit.
+// The three brick looks reuse Brighton's diffuse keys (one texture each, shared with brighton.js); the white high-rises add one
+// light painted-brick tile, their floor slabs are geometry (coney/city.js). Built on first use; never touches world.R.
+const EAST_WHITE = { base: '#e2ddd2', dark: '#d3cdc1', light: '#ece9e2', mortar: '#efece5' };
+export const EAST_TOWER = { brickBuff: 'eastBuff', brickRust: 'eastRust', brickStaller: 'eastBrown', concreteWhite: 'eastWhite' };
+/** the S1 tower materials on M (keys in EAST_TOWER; horizon.js lights their windows at night) */
+export function eastTowerMats(world, M) {
+  if (M.eastBuff) return EAST_TOWER;
+  const kit = brickFacadeKit(world), reg = (key, mat) => { mat.name = key; M[key] = mat; M.surface[key] = 'concrete'; M.uvScale[key] = 1; };
+  reg('eastBuff', kit.mat('brBuff', { base: '#c6b292', dark: '#b39e7e', light: '#d4c2a2', mortar: '#d9d0c0' }, { keystone: true }));
+  reg('eastRust', kit.mat('brRed', { base: '#7a392c', dark: '#642d23', light: '#8c4636', mortar: '#8a7c70' }));
+  reg('eastBrown', kit.mat('brTan', { base: '#b08a64', dark: '#9a7754', light: '#c09a72', mortar: '#cfc3b2' }, { soldier: true }, { color: 0xc8b4a4 }));
+  reg('eastWhite', kit.mat('eastWhite', EAST_WHITE));
+  return EAST_TOWER;
+}
