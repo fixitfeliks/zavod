@@ -560,7 +560,7 @@ export function metreUV(g, su = FAC.TB * FAC.BAY, sv = FAC.TF * FAC.FL) { const 
 // ---- S1, east of the Luna Park Houses (W 8 St to Ocean Pkwy, Surf Av to Neptune Av): the far towers' walls on the facade kit.
 // The three brick looks reuse Brighton's diffuse keys (one texture each, shared with brighton.js); the white high-rises add one
 // light painted-brick tile, their floor slabs are geometry (coney/city.js). Built on first use; never touches world.R.
-const EAST_WHITE = { base: '#e2ddd2', dark: '#d3cdc1', light: '#ece9e2', mortar: '#efece5' };
+export const EAST_WHITE = { base: '#e2ddd2', dark: '#d3cdc1', light: '#ece9e2', mortar: '#efece5' };
 export const EAST_TOWER = { brickBuff: 'eastBuff', brickRust: 'eastRust', brickStaller: 'eastBrown', concreteWhite: 'eastWhite' };
 /** the S1 tower materials on M (keys in EAST_TOWER; horizon.js lights their windows at night) */
 export function eastTowerMats(world, M) {

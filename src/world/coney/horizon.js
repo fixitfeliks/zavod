@@ -23,6 +23,7 @@ import { OSM } from './osm.js';
 import { YARD } from './yard.js';
 import { inCreek } from './realism.js';
 import { EAST_TOWER } from './mats.js';
+import { inS2, buildS2, S2_WIN } from './shellrd.js';
 
 const D2R = Math.PI / 180;
 const LAT0 = 40.5745, LON0 = -73.98, KX = 111320 * Math.cos(LAT0 * D2R), KY = 110540, CT = Math.cos(8.33 * D2R), ST_ = Math.sin(8.33 * D2R);
@@ -162,6 +163,7 @@ export function buildHorizon(world) {
   const ocean = buildOcean(world); count(ocean);
   const land = buildLand(world, R); land.forEach(count);
   const sprawl = buildSprawl(world, R, texF); sprawl.meshes.forEach(count);
+  if (sprawl.s2.length && world.mats) try { const s = buildS2(world, world.mats, sprawl.s2, sprawl.tints); console.info(`[horizon] S2 Shell Rd: ${s.boxes} boxes on the facade kit, ${s.shops} taxpayers`); } catch (e) { console.warn('[horizon] S2', e); }
   const sky = buildSkyline(world, R); sky.meshes.forEach(count);
   // lights sample the rides' struts and the scene's lamp meshes: those are built after us (landmarks, park), so defer to frame 1
   // (or at the pre-warm, whichever comes first: on phones / the headset the pre-warm frees those meshes' vertex arrays before frame 1)
@@ -375,7 +377,10 @@ function buildSprawl(world, R, texF) {
     const g = box.clone(); g.setAttribute('aTint', new THREE.InstancedBufferAttribute(tint, 3)); g.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seed, 1)); im.geometry = g;
     im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere(); meshes.push(addMesh(world, null, m, { far: isFar, order: isFar ? -985 : 0, name, instanced: im }));
   };
-  inst(near.concat(kit), false, 'sprawlNear'); inst(far, true, 'sprawlFar');
+  // S2 (north of Neptune Av, east of Shell Rd): those boxes are built on the facade kit instead (coney/shellrd.js), after all the
+  // R() draws above so the rest of the sprawl, its roof kit and the lamps (from the full near list) lay out exactly as before
+  const s2 = near.filter((b) => inS2((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2)), s2Set = new Set(s2);
+  inst(near.filter((b) => !s2Set.has(b)).concat(kit), false, 'sprawlNear'); inst(far, true, 'sprawlFar');
   // water tanks on the walk-ups and towers (near ring): wooden barrel + conical cap on a steel stand
   if (tanks.length) {
     const parts = [new THREE.CylinderGeometry(1.5, 1.5, 3.2, 10, 1, true).translate(0, 3.6, 0), new THREE.ConeGeometry(1.7, 1.2, 10).translate(0, 5.8, 0), new THREE.BoxGeometry(2.4, 2.0, 2.4).translate(0, 1.0, 0)];
@@ -397,7 +402,7 @@ function buildSprawl(world, R, texF) {
     trees.forEach(([x, z, sc], k) => { q.setFromAxisAngle(up, R() * 3); s.setScalar(sc); p.set(x, 0, z); M4.compose(p, q, s); im.setMatrixAt(k, M4); }); im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere();
     meshes.push(addMesh(world, null, m, { name: 'trees', instanced: im }));
   }
-  return { meshes, n: near.length + far.length, near, far, towers: towerSpots };
+  return { meshes, n: near.length + far.length, near, far, towers: towerSpots, s2, tints: TINTS };
 }
 function mergeSimple(list) {
   const pos = [], nor = [], uv = [];
@@ -764,7 +769,7 @@ function buildCycle(world, fw) {
   if (M.lampHead && M.lampHead.emissive && M.lampHead.emissive.getHex() === 0) { M.lampHead.emissive.set(0xffe0b0); boost.find((b) => b.m === M.lampHead).e0 = 0.05; }
   // unlit (MeshBasic) surf foam would glow white at night: dim it with the light level
   const foam = []; scene.traverse((o) => { if (o.isMesh && /^surf\d$/.test(o.name) && o.material?.color) foam.push({ m: o.material, c0: o.material.color.clone() }); });
-  const nightWin = ['hBrickWin', 'hCreamWin', 'hBrickTop', ...Object.values(EAST_TOWER)].map((k) => M[k]).filter((m) => m && m.emissiveMap);
+  const nightWin = ['hBrickWin', 'hCreamWin', 'hBrickTop', ...Object.values(EAST_TOWER), ...S2_WIN].map((k) => M[k]).filter((m) => m && m.emissiveMap);
   const moonDir = new THREE.Vector3(0.55, 0.55, 0.62).normalize(); sky.u.uMoonDir.value.copy(moonDir);
   const sunH = new THREE.Vector3(-0.989, 0, -0.145);    // due west in the map frame (the sun sets behind the Narrows)
   const tmp = {}; const lerpKeys = (s) => { let i = 0; while (i < KEYS.length - 2 && s > KEYS[i + 1].s) i++; const a = KEYS[i], b = KEYS[i + 1]; const f = Math.max(0, Math.min(1, (s - a.s) / (b.s - a.s))); for (const k in a) { if (k === 's') continue; if (a[k].isColor) (tmp[k] || (tmp[k] = new THREE.Color())).copy(a[k]).lerp(b[k], f); else tmp[k] = a[k] + (b[k] - a[k]) * f; } return tmp; };
