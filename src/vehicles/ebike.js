@@ -50,6 +50,19 @@ export function bent(list, pts, r, seg = 8, n = 16) {
 function norm(g) { g = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k); if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2)); return g; }
 export function merged(list) { const g = mergeGeometries(list.map(norm), false); for (const x of list) x.dispose(); return g; }
 
+// ---- lite-only vertex-colour merge: on a phone several differently-painted parts become one mesh (one draw) instead of
+// one mesh per material. Desktop keeps its separate textured/coloured meshes untouched (merged() above).
+const _vcol = new THREE.Color();
+export function vtint(g, hex) { g = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal'].includes(k)) g.deleteAttribute(k);
+  _vcol.setHex(hex); const n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) { a[i * 3] = _vcol.r; a[i * 3 + 1] = _vcol.g; a[i * 3 + 2] = _vcol.b; }
+  g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; }
+export function mergedVC(list) { const prep = (g) => { g = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'color'].includes(k)) g.deleteAttribute(k); return g; };
+  const g = mergeGeometries(list.map(prep), false); for (const x of list) x.dispose(); return g; }
+let VC_MATS = null;
+export function vcMaterials() { if (VC_MATS) return VC_MATS;
+  VC_MATS = { body: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.28, name: 'vc_body' }), wheel: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.15, name: 'vc_wheel' }) };
+  return VC_MATS; }
+
 /** a lathed bicycle / scooter tyre round the x axle: outer radius r, section height t, half width hw. Its UVs follow carkit's
  *  wheelGeometry (u round the tyre, v across the profile with the tread band in the middle), so it wears the shared tyre
  *  material (carMaterials().rubber: tread grooves, sipes, sidewall rings). */
@@ -145,7 +158,7 @@ export function buildCyclist(variant = 'citibike') {
 // ---- the bike --------------------------------------------------------------------------------------------------------------
 let GEO = {};
 function geometries(variant, lite) {
-  if (GEO[variant]) return GEO[variant];
+  const key = variant + (lite ? ':lite' : ''); if (GEO[key]) return GEO[key];
   const del = variant === 'delivery', F = [], D = [], C = [], A = [];   // frame paint, dark parts, chrome, accent (food box)
   const tr = del ? 0.024 : 0.021, seg = lite ? 6 : 10;
   const head0 = [0, 0.62, -0.47], head1 = [0, 0.75, -0.505];   // head tube bottom / top (~70 deg head angle)
@@ -204,17 +217,38 @@ function geometries(variant, lite) {
   }
   const tyre = tyreGeometry(WHEEL_R, del ? 0.05 : 0.036, del ? 0.03 : 0.019, lite ? 18 : 30);
   const spokes = spokeGeometry(WHEEL_R - (del ? 0.045 : 0.032), del ? 0.034 : 0.022, lite ? 14 : 24);
-  return (GEO[variant] = { frame: merged(F), dark: merged(D), chrome: merged(C), accent: A.length ? merged(A) : null, tyre, spokes, lensY: del ? 0.95 : 0.81, lensZ: del ? -0.6 : -0.947 });
+  const lensY = del ? 0.95 : 0.81, lensZ = del ? -0.6 : -0.947;
+  if (lite) {
+    // phones: every painted part becomes one vertex-coloured mesh (frame/dark/chrome/accent), and the wheel's tyre + spokes
+    // become a second one-draw mesh reused by both the front and rear wheel groups - 3 draws for the whole bike plus the lens
+    const frameHex = del ? 0x1c1d1f : 0x1665b4;
+    const body = mergedVC([...F.map((g) => vtint(g, frameHex)), ...D.map((g) => vtint(g, 0x18191b)), ...C.map((g) => vtint(g, 0xcfd4d8)), ...A.map((g) => vtint(g, 0xc8372d))]);
+    const wheel = mergedVC([vtint(tyre, 0x161616), vtint(spokes, 0xc9ced3)]);
+    return (GEO[key] = { lite: true, body, wheel, lensY, lensZ });
+  }
+  return (GEO[key] = { frame: merged(F), dark: merged(D), chrome: merged(C), accent: A.length ? merged(A) : null, tyre, spokes, lensY, lensZ });
 }
 
 /** Builds one e-bike. Returns { group, body, fork, wheelF, wheelR, headlight, lens, meshes, variant } - the same shape as
  *  bike.js's buildBike(), so vehicles.js drives a stolen one with the same spec-driven physics + chase-cam rider. */
 export function buildEbike(ctx, variant = 'citibike') {
-  const lite = !!ctx?.lite, M = ebikeMaterials(), G = geometries(variant, lite), SM = spokeMaterial(lite), TM = tyreMaterial();
+  const lite = !!ctx?.lite, M = ebikeMaterials(), G = geometries(variant, lite);
   const group = new THREE.Group(); group.name = 'ebike:' + variant;
   const body = new THREE.Group(); group.add(body);
   const meshes = [];
   const mk = (geo, mat, parent, shadow = true) => { const m = new THREE.Mesh(geo, mat); m.castShadow = shadow && !lite; m.receiveShadow = true; m.userData.surface = 'metal'; m.userData.noDent = true; parent.add(m); meshes.push(m); return m; };
+  if (lite) {
+    const VC = vcMaterials(); mk(G.body, VC.body, body, false);
+    const wheelR = new THREE.Group(); wheelR.position.set(0, WHEEL_R, REAR_Z); body.add(wheelR); mk(G.wheel, VC.wheel, wheelR, false);
+    const fork = new THREE.Group(); fork.position.set(0, WHEEL_R, FRONT_Z); body.add(fork); const wheelF = fork;
+    mk(G.wheel, VC.wheel, wheelF, false);
+    const lens = mk(new THREE.CircleGeometry(0.03, 12), M.lens.clone(), body, false); lens.position.set(0, G.lensY, G.lensZ - 0.002); lens.rotation.y = Math.PI;
+    const headlight = new THREE.SpotLight(0xfff1cf, 0, 20, 0.55, 0.5, 1.2);
+    headlight.position.set(0, G.lensY, G.lensZ - 0.02); headlight.target.position.set(0, 0.4, FRONT_Z - 8); headlight.castShadow = false; headlight.visible = false;
+    body.add(headlight); body.add(headlight.target);
+    return { group, body, fork, wheelF, wheelR, headlight, lens, meshes, variant };
+  }
+  const SM = spokeMaterial(lite), TM = tyreMaterial();
   mk(G.frame, variant === 'delivery' ? M.delivery : M.citi, body);
   mk(G.dark, M.dark, body);
   mk(G.chrome, M.chrome, body, false);

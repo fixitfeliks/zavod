@@ -7,7 +7,7 @@
 // paint schemes per build (shared materials, picked round-robin). Owned by: VEHICLES agent.
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { put, tube, bent, merged, tyreGeometry, tyreMaterial, seatedRider, joint } from './ebike.js';
+import { put, tube, bent, merged, tyreGeometry, tyreMaterial, seatedRider, joint, vtint, mergedVC, vcMaterials } from './ebike.js';
 
 // kick scooter: tiny wheels, a deck you stand on, a single steering column
 export const KICK_WHEEL_R = 0.09, KICK_WHEELBASE = 0.78, KICK_FRONT_Z = -0.42, KICK_REAR_Z = 0.36;
@@ -103,6 +103,15 @@ function geometries(variant, lite) {
     tyre = tyreGeometry(wr, 0.03, 0.017, lite ? 14 : 22, 1); hub = hubGeometry(wr - 0.03, 0.03, 0.016, lite ? 10 : 16);
     lens = new THREE.CircleGeometry(0.016, 10);
   }
+  if (lite) {
+    // phones: every painted part (paint/tone/dark/chrome/bare) becomes one vertex-coloured mesh, and the wheel's tyre + hub
+    // become a second one-draw mesh reused by both wheel groups - 3 draws for the whole scooter/moped plus the lens. The
+    // round-robin two-tone paint collapses to one fixed scheme on lite (desktop keeps the full variety, below).
+    const [pHex, tHex] = PAINTS[0];
+    const body = mergedVC([...P.map((g) => vtint(g, pHex)), ...T.map((g) => vtint(g, tHex ?? pHex)), ...D.map((g) => vtint(g, 0x141516)), ...C.map((g) => vtint(g, 0xdfe3e6)), ...B.map((g) => vtint(g, 0x3a3d41))]);
+    const wheel = mergedVC([vtint(tyre, 0x161616), vtint(hub, variant === 'moped' ? (tHex ?? pHex) : 0xb8bcc0)]);
+    return (GEO[key] = { lite: true, body, wheel, lens });
+  }
   return (GEO[key] = { paint: P.length ? merged(P) : null, tone: T.length ? merged(T) : null, dark: merged(D), chrome: C.length ? merged(C) : null, bare: B.length ? merged(B) : null, tyre, hub, lens });
 }
 
@@ -115,6 +124,18 @@ export function buildScooter(ctx, variant = 'kick') {
   const body = new THREE.Group(); group.add(body);
   const meshes = [];
   const mk = (geo, mat, parent, shadow = true) => { const m = new THREE.Mesh(geo, mat); m.castShadow = shadow && !lite; m.receiveShadow = true; m.userData.surface = 'metal'; m.userData.noDent = true; parent.add(m); meshes.push(m); return m; };
+  const lensY = moped ? 1.0 : 0.93, lensZ = moped ? frontZ + 0.068 : -0.418;
+  if (lite) {
+    const VC = vcMaterials(); mk(G.body, VC.body, body, false);
+    const wheelR = new THREE.Group(); wheelR.position.set(0, wr, rearZ); body.add(wheelR); mk(G.wheel, VC.wheel, wheelR, false);
+    const fork = new THREE.Group(); fork.position.set(0, wr, frontZ); body.add(fork); const wheelF = fork;
+    mk(G.wheel, VC.wheel, wheelF, false);
+    const lens = mk(G.lens, M.lens.clone(), body, false); lens.position.set(0, lensY, lensZ); lens.rotation.y = Math.PI;
+    const headlight = new THREE.SpotLight(0xfff1cf, 0, 16, 0.55, 0.5, 1.2);
+    headlight.position.set(0, lensY, lensZ - 0.02); headlight.target.position.set(0, 0.3, frontZ - 6); headlight.castShadow = false; headlight.visible = false;
+    body.add(headlight); body.add(headlight.target);
+    return { group, body, fork, wheelF, wheelR, headlight, lens, meshes, variant };
+  }
   const [paint, tone] = M.paints[paintN++ % M.paints.length];
   if (G.paint) mk(G.paint, paint, body);
   if (G.tone) mk(G.tone, tone, body);
@@ -128,7 +149,6 @@ export function buildScooter(ctx, variant = 'kick') {
   const fork = new THREE.Group(); fork.position.set(0, wr, frontZ); body.add(fork);
   const wheelF = fork;   // vehicles.js rotates wheelF.rotation.x for roll and fork.rotation.y for steer; sharing the group is fine here
   mk(G.tyre, tyreMaterial(), wheelF); mk(G.hub, hubMat, wheelF, false);
-  const lensY = moped ? 1.0 : 0.93, lensZ = moped ? frontZ + 0.068 : -0.418;
   const lens = mk(G.lens, M.lens.clone(), body, false); lens.position.set(0, lensY, lensZ); lens.rotation.y = Math.PI;
   const headlight = new THREE.SpotLight(0xfff1cf, 0, 16, 0.55, 0.5, 1.2);
   headlight.position.set(0, lensY, lensZ - 0.02); headlight.target.position.set(0, 0.3, frontZ - 6); headlight.castShadow = false; headlight.visible = false;
