@@ -9,6 +9,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { placeCars } from '../carkit.js';
 import { buildPerson, peopleReady } from '../people.js';
 import { BW, sandHeight, SAND_TOP } from './shore.js';
+import { brickFacadeKit, facadeBoxUV, boxFaces, metreUV, FAC } from './mats.js';
 
 export const BR = { x0: 436, x1: 2370, z0: -92, z1: 900 };   // the zone (players / vehicles / jet skis)
 const X0 = 1015, X1 = 2360, ZC = -40, HALF = 10, SWK = 5.5, SW = 0.15;   // Brighton Beach Ave: x span, centreline z, half width, sidewalk
@@ -17,6 +18,10 @@ const STN_X = 1622;                                             // Brighton Beac
 const CROSS = []; for (let x = 1090, n = 1; x < X1 - 30; x += 112, n++) CROSS.push({ x, n });   // Brighton 1st .. 12th
 const CW = 6;                                                   // cross street half width
 const CONN = [[934, 50], [1030, ZC + 4]];                       // Surf Ave's end → the avenue (the plaza at Ocean Pkwy, past the Q's stairs)
+const GF = 4.2;                                                  // the walk-ups' shop storey; the flats start above it
+// facade tones (mats.js brickFacadeKit): which windowed brick each of the old brick hexes becomes, a soft per-building tint over it,
+// and the plain party-wall tint that matches each tone; the six-storey blocks are buff brick with keystone lintels
+const BR_VAR = [0, 0, 1, 1, 0, 2, 0], BR_SOFT = [0xf5ece2, 0xe2d6c8, 0xffffff, 0xede6df, 0xede6df, 0xf5ece2, 0xffffff], BR_PLAIN = [0x904638, 0xd0a87e, 0xead9b8], BLOCK_VAR = 2;
 const NROW0 = 1200;                                             // the north row starts where the Q's el (it crosses diagonally to the avenue) clears it
 
 const SHOPS = [
@@ -53,7 +58,7 @@ export function buildBrighton(world) {
       if (x > 900 && x < BR.x1 + 30 && z > BR.z0 - 30 && z < BR.z1) return z >= BW.z1 ? sandHeight(x, z) : onRoad(x, z) ? 0 : SW;
       return gh ? gh(x, z) : 0; }; }
   const wbox = (x0, y0, z0, x1, y1, z1) => world.box([Math.min(x0, x1), y0, Math.min(z0, z1)], [Math.max(x0, x1), y1, Math.max(z0, z1)]);
-  const M = mats(lite); const G = new Map(); const put = (m, g) => { g = g.index ? g.toNonIndexed() : g; (G.get(m) || G.set(m, []).get(m)).push(g); return g; };
+  const M = mats(lite, brickFacadeKit(world)), frnd = mulberry(1623); /* frnd: the facade details' own stream (rnd lays out the avenue) */ const G = new Map(); const put = (m, g) => { g = g.index ? g.toNonIndexed() : g; (G.get(m) || G.set(m, []).get(m)).push(g); return g; };
   const box = (m, x0, y0, z0, x1, y1, z1, col) => { const g = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0); g.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2); if (col != null) tint(g, col); return put(m, g); };
   const plane = (m, x0, z0, x1, z1, y, uvs = 0) => { const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0); g.rotateX(-Math.PI / 2); g.translate((x0 + x1) / 2, y, (z0 + z1) / 2); if (uvs) scaleUV(g, (x1 - x0) / uvs, (z1 - z0) / uvs); return put(m, g); };
 
@@ -82,9 +87,25 @@ export function buildBrighton(world) {
   const brick = [0x9a5a44, 0x8a4a3a, 0xb07a5a, 0xa8876a, 0x7e4a3a, 0xc2a07a, 0x6f5a4a];
   let si = 0;
   const units = W.shopUnits || (W.shopUnits = []); let enterN = 0; const ENTER_MAX = ctx.safeMode ? 0 : lite ? 4 : 10;   // safe mode (ctx.js): no walk-in shops
+  // the walls: street + back faces in windowed brick (3 tones, soft per-building tints), the party walls plain brick, a tar roof
+  const facWall = (x0, z0, x1, z1, h, y0, v, ci, free = false) => { /* free: a block standing alone (windows on all four sides) */ const w = Math.abs(x1 - x0), d = Math.abs(z1 - z0), g = new THREE.BoxGeometry(w, h, d); g.translate((x0 + x1) / 2, SW + h / 2, (z0 + z1) / 2);
+    facadeBoxUV(g, w, h, d, y0); tint(g, BR_SOFT[ci]); put(M.walls[v], boxFaces(g, free ? [0, 1, 4, 5] : [4, 5])); if (!free) put(M.wallsPlain, tint(metreUV(boxFaces(g, [0, 1])), BR_PLAIN[v])); put(M.roof, tint(boxFaces(g, [2]), 0x55524c)); };
+  // wrought-iron fire escapes and window AC units on the avenue walk-ups (desktop: phones skip the extra geometry)
+  const ironBox = (x0, y0, z0, x1, y1, z1) => box(M.steel, Math.min(x0, x1), y0, Math.min(z0, z1), Math.max(x0, x1), y1, Math.max(z0, z1), 0x262829);
+  const walkupDetails = (x0, x1, zFace, sd, floors) => { if (lite || floors < 3) return;
+    const w = x1 - x0, nb = Math.max(1, Math.round(w / FAC.BAY)), bw = w / nb, cx = (x0 + x1) / 2, fe = frnd() < 0.5 && w > 6 ? Math.min(4.2, w - 1.6) : 0, zo = zFace - sd * 1.15;
+    for (let f = 1; f < floors; f++) { const y = SW + GF + (f - 1) * FAC.FL;
+      if (fe) { ironBox(cx - fe / 2, y, zFace - sd * 0.02, cx + fe / 2, y + 0.05, zo);                                   // the grating
+        for (const yy of [0.5, 0.98]) ironBox(cx - fe / 2, y + yy, zo, cx + fe / 2, y + yy + 0.035, zo + sd * 0.035);       // rails
+        for (const ex of [cx - fe / 2, cx + fe / 2 - 0.035]) ironBox(ex, y + 0.98, zFace - sd * 0.02, ex + 0.035, y + 1.015, zo);
+        for (let k = 0; k <= 8; k++) { const bx = cx - fe / 2 + k * (fe - 0.025) / 8; ironBox(bx, y, zo, bx + 0.025, y + 1.0, zo + sd * 0.025); }   // balusters
+        if (f < floors - 1) { const L = Math.hypot(fe * 0.72, FAC.FL), st = new THREE.BoxGeometry(L, 0.04, 0.5); st.rotateZ(Math.atan2(FAC.FL, fe * 0.72) * (f & 1 ? 1 : -1)); st.translate(cx, y + FAC.FL / 2, zo + sd * 0.3); tint(st, 0x262829); put(M.steel, st); } }
+      for (let b = 0; b < nb; b++) { const ax = x0 + (b + 0.5) * bw; if ((fe && Math.abs(ax - cx) < fe / 2 + 0.4) || frnd() > 0.3) continue; const ys = y + FAC.SILL;
+        box(M.trim, ax - 0.31, ys + 0.04, Math.min(zFace + sd * 0.05, zFace - sd * 0.34), ax + 0.31, ys + 0.46, Math.max(zFace + sd * 0.05, zFace - sd * 0.34), 0xc9c6bf); } }
+  };
   const walkup = (x0, x1, zFace, sd, depth, floors) => {   // sd: which way the building runs back from its face (-1: the north row, +1: the south row); the street is at -sd
-    const h = 4.2 + (floors - 1) * 3.1, zb = zFace + sd * depth, col = brick[Math.floor(rnd() * brick.length)];
-    const g = new THREE.BoxGeometry(x1 - x0, h, depth); g.translate((x0 + x1) / 2, SW + h / 2, (zFace + zb) / 2); boxUV(g, x1 - x0, h, depth); tint(g, col); put(M.walls, g);
+    const h = 4.2 + (floors - 1) * 3.1, zb = zFace + sd * depth, ci = Math.floor(rnd() * brick.length);
+    facWall(x0, zFace, x1, zb, h, GF - FAC.FL, BR_VAR[ci], ci);
     // a shop you can walk into (every few doors): the room is left out of the building's collider, the doorway open
     const S = SHOPS[si % SHOPS.length], enter = enterN < ENTER_MAX && x1 - x0 >= 7 && si % 6 === 2, dmid = (x0 + x1) / 2, H = 3.3, rd = Math.min(9, depth - 1.5);
     if (enter) { const zr = zFace + sd * rd;
@@ -94,7 +115,7 @@ export function buildBrighton(world) {
       units.push({ m: m.elements.slice(), flip: false, L: x1 - x0, u0: 0, u1: x1 - x0, dx: (x1 - x0) / 2 - 0.8, dw: 1.6, rd, H, kind: brKind(S[1]), name: S[1], c: [dmid, SW, zFace + sd * rd / 2], y0: SW }); enterN++;
     } else wbox(x0, 0, zFace, x1, SW + h, zb);
     // cornice, the shop: dark glass, a door, the sign band (atlas), an awning on some
-    box(M.trim, x0, SW + h - 0.1, zFace - sd * 0.35, x1, SW + h + 0.25, zFace, 0x8d877c);
+    box(M.trim, x0, SW + h - 0.1, zFace - sd * 0.35, x1, SW + h + 0.25, zFace, 0x8d877c); walkupDetails(x0, x1, zFace, sd, floors);
     const fz = zFace - sd * 0.04, ry = sd > 0 ? Math.PI : 0;
     if (enter) { box(M.glass, x0 + 0.4, SW + 0.3, fz, dmid - 0.8, SW + 2.9, fz - sd * 0.02); box(M.glass, dmid + 0.8, SW + 0.3, fz, x1 - 0.4, SW + 2.9, fz - sd * 0.02); box(M.trim, dmid - 0.85, SW, fz - sd * 0.03, dmid - 0.8, SW + 2.9, fz - sd * 0.08, 0x2a2622); box(M.trim, dmid + 0.8, SW, fz - sd * 0.03, dmid + 0.85, SW + 2.9, fz - sd * 0.08, 0x2a2622); }
     else { box(M.glass, x0 + 0.4, SW + 0.3, fz, x1 - 0.4, SW + 2.9, fz - sd * 0.02);
@@ -112,7 +133,7 @@ export function buildBrighton(world) {
   for (const [a, b] of blocks) {
     for (let x = a + 1; x < b - 1; ) { let w = 7 + Math.floor(rnd() * 3) * 2.5; if (x + w > b - 1) w = b - 1 - x; if (w < 4) break; walkup(x, x + w, ZC + HALF + SWK, 1, 16, 2 + Math.floor(rnd() * 2)); x += w; }
     const z0 = ZC + HALF + SWK + 22, z1 = BW.z0 - 22, fl = 6 + Math.floor(rnd() * 3), h = fl * 3.0 + 1;
-    for (const [p, q] of [[a + 3, (a + b) / 2 - 4], [(a + b) / 2 + 4, b - 3]]) { if (q - p < 12) continue; const g = new THREE.BoxGeometry(q - p, h, z1 - z0); g.translate((p + q) / 2, SW + h / 2, (z0 + z1) / 2); boxUV(g, q - p, h, z1 - z0); tint(g, brick[Math.floor(rnd() * brick.length)]); put(M.walls, g); wbox(p, 0, z0, q, SW + h, z1);
+    for (const [p, q] of [[a + 3, (a + b) / 2 - 4], [(a + b) / 2 + 4, b - 3]]) { if (q - p < 12) continue; facWall(p, z0, q, z1, h, h - fl * FAC.FL, BLOCK_VAR, Math.floor(rnd() * brick.length), true); wbox(p, 0, z0, q, SW + h, z1);
       box(M.trim, p - 0.2, SW + h, z0 - 0.2, q + 0.2, SW + h + 0.5, z1 + 0.2, 0x8d877c); }
   }
 
@@ -164,7 +185,7 @@ export function buildBrighton(world) {
   // ---- merge per material ----
   for (const [m, list] of G) { const merged = mergeGeometries(list.map(norm), false); if (!merged) { console.warn('[brighton] merge failed', m.name); continue; }
     const mesh = new THREE.Mesh(merged, m); mesh.name = 'brighton:' + m.name; mesh.receiveShadow = true; mesh.castShadow = !lite && m !== M.road && m !== M.walk && m !== M.deck && m !== M.paint && m !== M.sign; scene.add(mesh);
-    if (m === M.walls || m === M.el) ctx.raycastTargets?.push?.(mesh); }
+    if (M.walls.includes(m) || m === M.wallsPlain || m === M.el) ctx.raycastTargets?.push?.(mesh); }
 
   // ---- babushkas on the boardwalk benches, a few people out on the avenue ----
   if (peopleReady() && !lite) { const n = 16;   // phones: no extra figures out here (memory)
@@ -175,6 +196,7 @@ export function buildBrighton(world) {
       f.group.position.set(x, onBench ? 0.05 : SW, z); f.group.rotation.y = onBench ? 0 : rnd() * 6.28; scene.add(f.group); B.figs.push(f); } catch (e) { console.warn('[brighton] person', e); break; } } }
   // the neon: on with the lamps, a flicker every few seconds
   world.updaters.push((dt) => { const k = W.lampK ?? 0; for (const n of W.brNeon || []) { n.next -= dt; if (n.next <= 0) { n.off = 0.08 + Math.random() * 0.25; n.next = 3 + Math.random() * 6; } n.off -= dt; n.m.emissiveIntensity = (0.4 + 3.2 * k) * (n.off > 0 ? 0.15 + Math.random() * 0.3 : 1); } });
+  if (M.walls[0].emissiveMap) world.updaters.push(() => { const k = 0.9 * (W.night ?? 0); for (const m of M.walls) m.emissiveIntensity = k; });   // lamps on in the flats after dark
   world.updaters.push((dt) => { const p = ctx.player?.position; if (!p) return; const near = p.x > 700; for (const f of B.figs) { f.group.visible = near; if (near && Math.abs(f.group.position.x - p.x) < 60) f.update(dt, 0); }
     if (p.x > 900 && !B.hint) { B.hint = 1; ctx.hud?.toast?.('BRIGHTON BEACH — Little Odessa. Brighton Beach Ave under the el, the boardwalk to the south. West for Coney.', 4200); } if (p.x < 700) B.hint = 0; });
   if (typeof window !== 'undefined' && window.__game) window.__game.brighton = { zone: BR, ave: { x0: X0, x1: X1, z: ZC }, station: STN_X, cross: CROSS.map((c) => c.x), gh: (x, z) => W.groundHeight(x, z) };
@@ -191,29 +213,28 @@ function drawSign(g, x, y, w, h, [ru, en, bg, fg]) {
 function drawStation(g, x, y, w, h) { g.fillStyle = '#111'; g.fillRect(x, y, w, h); g.fillStyle = '#fff'; g.textAlign = 'left'; g.textBaseline = 'middle'; g.font = `700 ${h * 0.44}px Helvetica, Arial`; g.fillText('Brighton Beach', x + h * 0.25, y + h * 0.5);
   [['B', '#ff6319', '#fff'], ['Q', '#fccc0a', '#111']].forEach(([t, c, f], i) => { const cx = x + w - h * (1.1 + i * 0.95); g.fillStyle = c; g.beginPath(); g.arc(cx, y + h / 2, h * 0.36, 0, 7); g.fill(); g.fillStyle = f; g.textAlign = 'center'; g.font = `700 ${h * 0.44}px Helvetica, Arial`; g.fillText(t, cx, y + h * 0.54); g.textAlign = 'left'; }); }
 function canvasTex(w, h, draw, rep) { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; if (rep) t.wrapS = t.wrapT = THREE.RepeatWrapping; return t; }
-function mats(lite) {
+function mats(lite, kit) {
   const S = (o) => new THREE.MeshStandardMaterial({ roughness: 0.85, ...o });
   const q = lite ? 0.5 : 1;
   const road = canvasTex(256 * q, 256 * q, (g, w, h) => { g.fillStyle = '#3b3c3e'; g.fillRect(0, 0, w, h); for (let i = 0; i < 3000 * q; i++) { const v = 45 + Math.random() * 35; g.fillStyle = `rgba(${v},${v},${v + 2},.5)`; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); } }, true);
-  const win = canvasTex(128, 256, (g, w, h) => { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); for (let i = 0; i < 600; i++) { g.fillStyle = `rgba(0,0,0,${Math.random() * 0.12})`; g.fillRect(Math.random() * w, Math.random() * h, 4, 2); }
-    for (let y = 30; y < 250; y += 40) for (let x = 14; x < 120; x += 32) { g.fillStyle = '#1d2530'; g.fillRect(x, y, 16, 24); g.fillStyle = '#e6e0d2'; g.fillRect(x - 2, y + 24, 20, 3); } }, true);
   const planks = canvasTex(256 * q, 256 * q, (g, w, h) => { for (let i = 0; i < 16; i++) { const v = 120 + Math.random() * 40; g.fillStyle = `rgb(${v},${v * 0.78},${v * 0.55})`; g.fillRect(0, i * h / 16, w, h / 16 - 2); } g.fillStyle = 'rgba(0,0,0,.35)'; for (let i = 0; i < 16; i++) g.fillRect(0, i * h / 16 + h / 16 - 2, w, 2); }, true);
   const sand = canvasTex(256 * q, 256 * q, (g, w, h) => { g.fillStyle = '#d8c7a0'; g.fillRect(0, 0, w, h); for (let i = 0; i < 6000 * q; i++) { const v = Math.random(); g.fillStyle = `rgba(${150 + v * 80},${130 + v * 70},${90 + v * 60},.35)`; g.fillRect(Math.random() * w, Math.random() * h, 2, 2); } }, true);
   const m = {
     road: S({ map: road, roughness: 0.92 }), walk: S({ vertexColors: true, roughness: 0.9 }), paint: S({ vertexColors: true, roughness: 0.6 }),
-    walls: S({ map: win, vertexColors: true, roughness: 0.9 }), trim: S({ vertexColors: true, roughness: 0.7 }), roof: S({ vertexColors: true, roughness: 0.7, metalness: 0.2 }),
+    wallsRed: kit.mat('brRed', { base: '#7a392c', dark: '#642d23', light: '#8c4636', mortar: '#8a7c70' }, {}, { vertexColors: true }),
+    wallsTan: kit.mat('brTan', { base: '#b08a64', dark: '#9a7754', light: '#c09a72', mortar: '#cfc3b2' }, { soldier: true }, { vertexColors: true }),
+    wallsBuff: kit.mat('brBuff', { base: '#c6b292', dark: '#b39e7e', light: '#d4c2a2', mortar: '#d9d0c0' }, { keystone: true }, { vertexColors: true }),
+    wallsPlain: kit.plainMat({ vertexColors: true }), trim: S({ vertexColors: true, roughness: 0.7 }), roof: S({ vertexColors: true, roughness: 0.7, metalness: 0.2 }),
     glass: S({ color: 0x1a2430, roughness: 0.15, metalness: 0.4 }), sign: new THREE.MeshStandardMaterial({ roughness: 0.6, emissive: 0xffffff, emissiveIntensity: 0.25 }),
     el: S({ vertexColors: true, roughness: 0.7, metalness: 0.3 }), steel: S({ vertexColors: true, roughness: 0.5, metalness: 0.6 }),
     lamp: new THREE.MeshStandardMaterial({ color: 0xfff1d0, emissive: 0xffd9a0, emissiveIntensity: 0.6 }), globe: new THREE.MeshStandardMaterial({ color: 0x5fd07a, emissive: 0x2fbf5a, emissiveIntensity: 0.9 }),
     bark: S({ vertexColors: true, roughness: 0.95 }), leaf: new THREE.MeshLambertMaterial({ color: 0xffffff }), deck: S({ map: planks, roughness: 0.9 }), rail: S({ vertexColors: true, roughness: 0.6, metalness: 0.3 }),
     bench: S({ vertexColors: true, roughness: 0.85 }), sand: S({ map: sand, roughness: 0.97 }),
   };
-  for (const k in m) m[k].name = k; return m;
+  for (const k in m) m[k].name = k; m.walls = [m.wallsRed, m.wallsTan, m.wallsBuff]; return m;
 }
 function tint(g, hex) { const c = new THREE.Color(hex), n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; }
 function scaleUV(g, su, sv) { const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv); }
-/** box UVs in metres of façade: one window bay per 1.75 m across, one floor per 3.1 m up (the window texture's repeat) */
-function boxUV(g, w, h, d) { const uv = g.attributes.uv, n = g.attributes.normal; for (let i = 0; i < uv.count; i++) { const along = Math.abs(n.getX(i)) > 0.5 ? d : w; uv.setXY(i, uv.getX(i) * along / 3.5, uv.getY(i) * h / 6.2); } }
 /** every geometry merged per material needs the same attributes: colour (white where missing) and uv */
 function norm(g) { const n = g.attributes.position.count; if (!g.attributes.color) tint(g, 0xffffff); if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2)); if (!g.attributes.normal) g.computeVertexNormals(); return g; }
 function mulberry(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }

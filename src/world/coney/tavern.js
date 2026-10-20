@@ -12,6 +12,7 @@
 // Getting back: the N at 8 Av (F at the station entrance → Stillwell), drive off either end of 8th Ave (→ the Belt), or T.
 // Interior is lit by baked shading (unlit materials): no runtime lights, identical day and night. CONEY agent (tavern).
 import { extraFronts } from './fronts.js';
+import { brickFacadeKit, metreUV, FAC } from './mats.js';
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { hangkit as K } from '../hangkit.js';
@@ -23,6 +24,9 @@ import { LAYOUT } from './tavern-layout.js';
 
 export const TZ = { x0: -135, x1: 135, z0: -12052, z1: -11948, oz: -12000 };   // world rect of the zone; local z = world z − oz (x is shared)
 const SW = 0.15;                                                                // sidewalk / bar floor height
+const TILE_W = FAC.TB * FAC.BAY, TILE_H = FAC.TF * FAC.FL;   // the facade tile in metres (mats.js FAC)
+// brickTint -> [tan?, soft vertex tint] for the upper floors (the tone lives in the texture now, not the vertex colour)
+const UPPER_TONE = new Map([[0x9a4a36, [0, 0xfff6ee]], [0x8a5a44, [0, 0xe8dfd8]], [0xb07a5a, [1, 0xfff6ee]], [0x7e3f30, [0, 0xe2d6cf]], [0xa8876a, [1, 0xe8dfd8]], [0x92523e, [0, 0xf4ebe4]]]), UPPER_TONE_DEFAULT = [0, 0xffffff];
 const ROAD = 6, WALK = 10.5;                                                    // road half-width, building line
 const ST60 = [-30, -18], ST61 = [62, 74];                                        // the cross streets (local x)
 /** 8th Ave's layout for the street kit (coney/street.js avenueKit): the avenue along x at the zone's z, the two cross streets */
@@ -57,9 +61,9 @@ export function buildTavern(world) {
   // it only turns up while you're on 8th Ave (intensity changes are free)
   Z.hemi = new THREE.HemisphereLight(0xffe2b8, 0x4a3020, 0); scene.add(Z.hemi);
   const rnd = mulberry(6004);
-  const G = new Map(); const put = (m, g) => { g = g.index ? g.toNonIndexed() : g; (G.get(m) || G.set(m, []).get(m)).push(g); return g; };
+  const G = new Map(); const put = (m, g) => { g = g.index ? g.toNonIndexed() : g; if (m === M.side) metreUV(g); (G.get(m) || G.set(m, []).get(m)).push(g); return g; };   // party walls: brick in world metres
   const wbox = (x0, y0, z0, x1, y1, z1) => world.box([Math.min(x0, x1), y0, Math.min(z0, z1) + TZ.oz], [Math.max(x0, x1), y1, Math.max(z0, z1) + TZ.oz]);
-  const M = mats(lite);
+  const M = mats(lite, brickFacadeKit(world));
   Z.M = M;
 
   // ---- the atlas: every storefront, the tavern's whole facade, flags and signs share one canvas (one draw call) ----------------
@@ -98,6 +102,10 @@ export function buildTavern(world) {
     }
   }
   const brickTint = [0x9a4a36, 0x8a5a44, 0xb07a5a, 0x7e3f30, 0xa8876a, 0x92523e], walkIns = [];
+  // the upper floors (mats.js brickFacadeKit): the old dark tints pick a brick tone (red / tan) and a soft neutral tint over it,
+  // so the white sashes and the glass stay clean; whole bays across, storeys up from the plane's foot
+  const upper = (g, hex) => { const t = UPPER_TONE.get(hex) ?? UPPER_TONE_DEFAULT; setColor(g, t[1]); put(t[0] ? M.upperTan : M.upper, g); };
+  const facUV = (g, w, h) => scaleUV(g, Math.max(1, Math.round(w / FAC.BAY)) / FAC.TB, h / TILE_H);
   for (const B of bld) {
     const w = B.x1 - B.x0, fz = B.sd * WALK, gf = 4.3, h = B.hero === 'tavern' ? 7.6 : gf + (B.floors - 1) * 3.1 + 0.7; B.h = h;
     const depth = B.hero === 'tavern' ? 62 * FT : 16, cx = (B.x0 + B.x1) / 2, back = fz + B.sd * depth;
@@ -114,8 +122,8 @@ export function buildTavern(world) {
         store: { n: B.shop.en, s: B.shop.zh, st: 'box', bg: B.shop.bg, fg: B.shop.fg, aw: B.shop.awn != null ? '#' + B.shop.awn.toString(16).padStart(6, '0') : null, k: /bakery|roast/.test(B.shop.kind) ? 'restaurant' : /travel|tax|driving/.test(B.shop.kind) ? 'bank' : 'convenience' }, enter: true });
       B.walkIn = true; }
     // upper floors: the shared brick-and-windows material (lit by the sun: it's day or night out here)
-    { const g = new THREE.PlaneGeometry(w, h - gf); const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / 1.75 + (B.x0 % 1.75) / 1.75, uv.getY(i) * (h - gf) / 3.1 - 0.02);
-      if (B.sd > 0) g.rotateY(Math.PI); g.translate(cx, gf + (h - gf) / 2, fz - B.sd * 0.01); setColor(g, colour); put(M.upper, g); }
+    { const g = new THREE.PlaneGeometry(w, h - gf); facUV(g, w, h - gf);
+      if (B.sd > 0) g.rotateY(Math.PI); g.translate(cx, gf + (h - gf) / 2, fz - B.sd * 0.01); upper(g, colour); }
     // cornice + parapet cap, window sills are in the texture
     { const g = new THREE.BoxGeometry(w, 0.28, 0.45); g.translate(cx, h - 0.2, fz - B.sd * 0.2); shade(g, B.floors > 2 ? 0x8d877c : 0x5b4a40); put(M.prop, g); }
     { const g = new THREE.BoxGeometry(w, 0.16, 0.25); g.translate(cx, gf, fz - B.sd * 0.1); shade(g, 0x7e7a72); put(M.prop, g); }
@@ -138,7 +146,7 @@ export function buildTavern(world) {
       { const g = new THREE.BoxGeometry(3.2, SW, Math.abs(z1 - z0)); g.translate(curb + sx * 1.6, SW / 2, (z0 + z1) / 2); boxUV(g, 1.5); put(M.walk, g); }   // the sidewalk
       for (let z = Math.min(z0, z1); z < Math.max(z0, z1) - 3; ) { const w = Math.min(Math.max(z0, z1) - z, 5.4 + rnd() * 1.2), floors = rnd() < 0.6 ? 3 : 2, h = 0.9 + floors * 3.1, d = 12, cz = z + w / 2, back = face + sx * d, col = brick[(rnd() * brick.length) | 0];
         { const g = new THREE.BoxGeometry(d, h, w); g.translate((face + back) / 2, h / 2, cz); put(M.side, g); wbox(face, 0, z + 0.02, back, h, z + w - 0.02); }
-        { const g = new THREE.PlaneGeometry(w, h - 1.2); const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / 1.75, uv.getY(i) * (h - 1.2) / 3.1); g.rotateY(sx < 0 ? Math.PI / 2 : -Math.PI / 2); g.translate(face - sx * 0.01, 1.2 + (h - 1.2) / 2, cz); setColor(g, col); put(M.upper, g); }
+        { const g = new THREE.PlaneGeometry(w, h - 1.2); facUV(g, w, h - 1.2); g.rotateY(sx < 0 ? Math.PI / 2 : -Math.PI / 2); g.translate(face - sx * 0.01, 1.2 + (h - 1.2) / 2, cz); upper(g, col); }
         { const g = new THREE.BoxGeometry(0.4, 0.25, w); g.translate(face - sx * 0.2, h - 0.15, cz); shade(g, 0x8d877c); put(M.prop, g); }   // cornice
         if (!lite) for (let k = 0; k < 4; k++) { const g = new THREE.BoxGeometry(0.35, 0.2 * (k + 1), 1.4); g.translate(face - sx * (1.6 - k * 0.35), 0.1 * (k + 1), cz + w * 0.25); shade(g, 0xa8a090); put(M.prop, g); }   // the stoop
         if (!lite) { const g = new THREE.BoxGeometry(0.08, 2.3, 1.0); g.translate(face - sx * 0.04, 0.8 + 1.15, cz + w * 0.25); shade(g, [0x3a2a1e, 0x1f3a2a, 0x5a1a1a][(rnd() * 3) | 0]); put(M.prop, g); }   // the door
@@ -148,7 +156,7 @@ export function buildTavern(world) {
   { const far = []; for (const sd of [-1, 1]) for (let x = -300; x < 300; x += 7 + rnd() * 3) { if (x > (lite ? -106 : -130) && x < (lite ? 108 : 130)) continue; far.push([x, sd, 7 + rnd() * 3, 7 + Math.floor(rnd() * 3) * 3.1]); }
     for (const [a, b] of [ST60, ST61]) for (const sd of [-1, 1]) far.push([(a + b) / 2, sd * 5.5, b - a + 8, 11, true]);
     for (const q of far) { const [x, sd, w, h, cross] = q; const z = cross ? sd * 55 : sd * (WALK + 0.2); const d = cross ? 8 : 14;
-      const g = new THREE.BoxGeometry(w, h, d); const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / 1.75, uv.getY(i) * h / 3.1); g.translate(x, h / 2, z + (cross ? 0 : sd * d / 2)); setColor(g, brickTint[Math.floor(rnd() * brickTint.length)]); put(M.upper, g); } }
+      const g = new THREE.BoxGeometry(w, h, d); scaleUV(g, w / TILE_W, h / TILE_H); g.translate(x, h / 2, z + (cross ? 0 : sd * d / 2)); upper(g, brickTint[Math.floor(rnd() * brickTint.length)]); } }
   for (const [a, b] of [ST60, ST61]) for (const sd of [-1, 1]) wbox(a, 0, sd * 50, b, 12, sd * 52);   // the cross streets end
   // trees (London planes in pits), street lamps, hydrant, trash cans
   const trees = []; for (const sd of [-1, 1]) for (let x = -100; x < 104; x += 9 + rnd() * 5) { if ((x > ST60[0] - 2 && x < ST60[1] + 2) || (x > ST61[0] - 2 && x < ST61[1] + 2) || (sd > 0 && x > -7 && x < 4) || (sd < 0 && Math.abs(x - NSTAT.x) < 4)) continue; if (rnd() < (lite ? 0.45 : 0.72)) trees.push([x, sd * (ROAD + 1.3)]); }
@@ -244,7 +252,7 @@ export function buildTavern(world) {
   // ---- merge everything per material --------------------------------------------------------------------------------------------------
   for (const [m, list] of G) { normAttrs(list); const merged = mergeGeometries(list, false); if (!merged) { console.warn('[tavern] merge failed', m.name); continue; }
     const mesh = new THREE.Mesh(merged, m); mesh.name = 'tavern:' + (m.name || m.type); mesh.receiveShadow = !m.isMeshBasicMaterial; mesh.castShadow = !lite && !m.isMeshBasicMaterial && m !== M.road && m !== M.cross && m !== M.ground && m !== M.walk; root.add(mesh);
-    if (m === M.side || m === M.wall || m === M.upper) ctx.raycastTargets?.push?.(mesh); }
+    if (m === M.side || m === M.wall || m === M.upper || m === M.upperTan) ctx.raycastTargets?.push?.(mesh); }
   // parked cars along both kerbs (stealable — they're the kit's parked cars), a gap in front of the tavern
   { const list = []; for (const sd of [-1, 1]) for (let x = -98; x < 100; x += 6.2 + rnd() * 1.5) { if ((x > ST60[0] - 4 && x < ST60[1] + 3) || (x > ST61[0] - 4 && x < ST61[1] + 3) || (sd > 0 && x > -9 && x < 6) || (sd < 0 && Math.abs(x - NSTAT.x) < 5) || rnd() < 0.3) continue; list.push({ x, z: sd * (ROAD - 1.1) + TZ.oz, ry: sd > 0 ? 0 : Math.PI, kind: rnd() < 0.2 ? 'suv' : 'sedan' }); }
     try { placeCars(world, list.map((c) => ({ ...c, kind: ['sedan', 'suv', 'cab'].includes(c.kind) ? c.kind : 'sedan' })), { raycast: true }); for (const c of list) wbox(c.x - 2.2, 0, c.z - TZ.oz - 0.9, c.x + 2.2, 1.4, c.z - TZ.oz + 0.9); } catch (e) { console.warn('[tavern] cars', e); } }
@@ -256,6 +264,7 @@ export function buildTavern(world) {
   K.spot({ pos: Z.basement, r: 1.1, dy: 2, low: true, prompt: 'F — BASEMENT DOOR', act: () => K.toast('Basement (not open yet). ' + pick(['KENNY, from the bar: «Kegs, mops and 1929. Nobody goes down there.»', 'Somebody wrote «NORGE 1929» on the door in pencil.', 'You hear a keg compressor… and maybe Big Tony counting something.']), 3200) });
   K.spot({ pos: Z.yardSpot, r: 2.2, dy: 2, low: true, prompt: 'F — HAVE A SMOKE OUT BACK', act: () => yardSmoke() });
   world.updaters.push((dt) => { if (Z?.world === world) update(dt); });
+  if (M.upper.emissiveMap) world.updaters.push(() => { M.upper.emissiveIntensity = M.upperTan.emissiveIntensity = 0.9 * (W.night ?? 0); });   // lamps on in the flats after dark
   try { buildTavernPeople(world); } catch (e) { console.warn('[tavern] people', e); }
   try { buildDarts(world); } catch (e) { console.warn('[tavern] darts', e); }
   if (typeof window !== 'undefined' && window.__game) window.__game.tavern = { arrive: (h) => arrive(h), leave: (h) => leave(h), state: () => ({ inZone: inZone(ctx.player.position), inBar: inBar(ctx.player.position), busy: Z.busy, pos: ctx.player.position.toArray().map((v) => +v.toFixed(2)) }), zone: TZ, bar: BAR, door: [(DOOR[0] + DOOR[1]) / 2, SW, TZ.oz + WALK], nPos: Z.nPos.toArray(), boards: W.tavern.boards, juke: (t) => { const t0 = jukeOn(t); ctx.net?.send?.('juke', { title: t, t0 }); return t0; }, radio: () => ({ now: W.radio?.now, qa: W.radio?.qa?.() }), back: () => ({ urinal: Z.urinal.toArray(), yard: Z.yardSpot.toArray(), exitX: lx(LAYOUT.doors.find((d) => d.id === 'back_door').center[0]), z1: BAR.z1 + TZ.oz }), layout: () => Z.layoutStats, pee: () => pee(), peeT: () => Z.pee || 0 };
@@ -551,7 +560,7 @@ export const tavernPlan = () => ({ lx, lz, ly, FT, LAYOUT });
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // materials: street (lit), atlas (unlit: signs + shop windows glow a little at night), the room (unlit, baked shading)
-function mats(lite) {
+function mats(lite, kit) {
   const S = (c, r = 0.85, m = 0) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
   const B = (o) => new THREE.MeshBasicMaterial(o);
   const t = (w, h, draw, rep) => makeCanvasTex(w, h, draw, rep).tex;
@@ -561,9 +570,11 @@ function mats(lite) {
     cross: new THREE.MeshStandardMaterial({ map: t(128 * q, 128 * q, (g, w, h) => noiseFill(g, w, h, '#3d3e40', 38, 62), [1, 1]), roughness: 0.92 }),
     ground: S(0x2a2b2c, 1),
     walk: new THREE.MeshStandardMaterial({ map: t(256 * q, 256 * q, (g, w, h) => { noiseFill(g, w, h, '#a9a49b', 150, 185); g.strokeStyle = 'rgba(60,55,50,.45)'; g.lineWidth = 2; for (let i = 0; i <= 2; i++) { g.beginPath(); g.moveTo(i * w / 2, 0); g.lineTo(i * w / 2, h); g.stroke(); g.beginPath(); g.moveTo(0, i * h / 2); g.lineTo(w, i * h / 2); g.stroke(); } for (let i = 0; i < 14; i++) { g.fillStyle = 'rgba(40,40,40,.25)'; g.beginPath(); g.arc(Math.random() * w, Math.random() * h, 2 + Math.random() * 4, 0, 7); g.fill(); } }, [1, 1]), roughness: 0.95 }),
-    kerb: S(0x8e8a82, 0.9), paint: S(0xe9e6dc, 0.8), side: S(0x6e4436, 0.95), steel: S(0x2a2c2e, 0.5, 0.6),
+    kerb: S(0x8e8a82, 0.9), paint: S(0xe9e6dc, 0.8), side: kit.plainMat({ color: 0x9a5f4c }), steel: S(0x2a2c2e, 0.5, 0.6),
     lamp: B({ color: 0xffe8b0 }), pool: B({ map: glowTex(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.22, toneMapped: false }), globe: B({ color: 0x3fe07a }), leaf: new THREE.MeshLambertMaterial({ color: 0xffffff }),
-    upper: new THREE.MeshStandardMaterial({ map: t(128 * q, 224 * q, (g, w, h) => drawUpper(g, w, h), [1, 1]), vertexColors: true, roughness: 0.9 }),
+    // Sunset Park brick: red with stone lintels and 福 / 出租 cards in some windows, tan with soldier courses (Brighton's tan diffuse)
+    upper: kit.mat('tvRed', { base: '#7e3a2b', dark: '#6a3024', light: '#8f4834', mortar: '#8c7e72' }, { keystone: true, cards: true }, { vertexColors: true }),
+    upperTan: kit.mat('brTan', { base: '#b08a64', dark: '#9a7754', light: '#c09a72', mortar: '#cfc3b2' }, { soldier: true }, { vertexColors: true }),
     prop: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75 }),
     atlas: B({ side: THREE.DoubleSide }), atlasLit: B({ side: THREE.FrontSide }),
     // the room (unlit: the light is baked into vertex colours / textures)
@@ -634,15 +645,6 @@ const SHOP_6002 = { zh: '點心茶樓', en: '6002 · DIM SUM', bg: '#9a1414', fg
 const SHOP_6006 = { zh: '全通駕駛學校', en: 'CHUAN TONG DRIVING SCHOOL · 718-435-5883', bg: '#f2c417', fg: '#c21d1d', kind: 'office' };
 
 // ---- drawing ------------------------------------------------------------------------------------------------------------------------
-function drawUpper(g, w, h) {   // one window bay of a brick walk-up: 1.75 m × 3.1 m
-  noiseFill(g, w, h, '#cfcac4', 190, 225); const bh = h / 40; g.strokeStyle = 'rgba(80,60,50,.22)'; g.lineWidth = 1;
-  for (let y = 0; y < h; y += bh) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); for (let x = (y / bh) % 2 ? 0 : w / 8; x < w; x += w / 4) { g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + bh); g.stroke(); } }
-  const wx = w * 0.22, ww = w * 0.56, wy = h * 0.22, wh = h * 0.52;
-  g.fillStyle = '#d8d2c2'; g.fillRect(wx - 3, wy - 5, ww + 6, 5); g.fillRect(wx - 4, wy + wh, ww + 8, 6);
-  const gr = g.createLinearGradient(0, wy, 0, wy + wh); gr.addColorStop(0, '#2c3440'); gr.addColorStop(1, '#171b22'); g.fillStyle = gr; g.fillRect(wx, wy, ww, wh);
-  g.fillStyle = 'rgba(230,220,190,.55)'; g.fillRect(wx + 2, wy + 2, ww - 4, wh * 0.35);   // blinds half down
-  g.fillStyle = '#eee9dc'; g.fillRect(wx, wy + wh / 2 - 1, ww, 3); g.fillRect(wx + ww / 2 - 1, wy, 3, wh);
-}
 function drawStore(g, w, h, s, metres) {
   const px = w / metres;
   noiseFill(g, w, h, '#3b3a38', 50, 70);

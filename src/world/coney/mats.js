@@ -425,3 +425,134 @@ function elMats(M, reg, R, std, canvas, tex) {
     const t = tex(c); t.anisotropy = 8;
     reg('elSoffit', std({ map: t, emissiveMap: t, emissive: 0xffffff, emissiveIntensity: 0.55, color: 0xffffff, roughness: 0.85, metalness: 0.1 }), 'wood', 1); }
 }
+
+// =====================================================================================================================
+// PRE-WAR BRICK FACADE KIT (Brighton Beach walk-ups, 8th Ave rowhouses): the Luna Park Houses pipeline (housing.js
+// facadeTextures) for 1.75 m bays with one double-hung window each. One window layout per world, ONE normal / roughness /
+// night map set shared by every diffuse variant (only the brick colour, lintels and window cards differ), 1024^2 on desktop,
+// 512^2 (diffuse) and no night map on phones; the normal / roughness pair is its own 256^2 pass on phones since only the
+// raised-mortar / window-reveal shading comes off it, not colour. Own seeded PRNGs only (never world.R). On phones every
+// canvas is uploaded and dropped the moment its texture is built (renderer.initTexture, not the render loop's lazy upload)
+// so the kit never holds more than one canvas-sized buffer at a time; the tint variants share one scratch canvas too.
+export const FAC = { BAY: 1.75, FL: 3.1, TB: 4, TF: 3, SILL: 0.9, WH: 1.55, WW: 0.95 };   // tile: 4 bays x 3 storeys = 7 m x 9.3 m
+const FAC_ROWS = 140, FAC_COLS = 36;   // brick courses / stretchers per tile (integers so the bond tiles seamlessly; ~6.6 cm x 19 cm)
+const FAC_LAYOUT_SEED = 0xfacade, FAC_PLAIN_SEED = 77;
+const FAC_NORMAL_RES_LITE = 256;   // normal / roughness resolution on phones (diffuse stays at the 512 lite size)
+const facKits = new WeakMap();
+function facRng(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+/** the canvas is only needed for the upload: drop it after (the JS / canvas heap on phones) */
+const freeOnUpload = (t) => { t.onUpdate = () => { t.image = null; t.onUpdate = null; }; return t; };
+const facTex = (c, srgb, aniso) => { const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso; return freeOnUpload(t); };
+/** phones only: force the GPU upload now (instead of waiting for the render loop) so freeOnUpload's onUpdate fires right
+ *  away and the backing canvas is dropped before the next one is built, instead of all of them piling up until first paint */
+const facEagerUpload = (renderer, t) => { if (renderer) renderer.initTexture(t); return t; };
+/** the window grid for a facade pass at this pixel scale: same seed every time so every resolution lays out identically */
+const facWins = (TB, TF, BAY, FL, SILL, WH, S, px, py) => { const lay = facRng(FAC_LAYOUT_SEED), w = [];
+  for (let f = 0; f < TF; f++) for (let b = 0; b < TB; b++) w.push({ cx: (b + 0.5) * BAY * px, yB: S - (f * FL + SILL) * py, yT: S - (f * FL + SILL + WH) * py, f, rnd: lay(), card: lay() }); return w; };
+const CJK_FONT = '"PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif';
+
+/** the shared kit for this world: kit.mat(key, palette, opts) / kit.plainMat(extra) build materials on the shared maps */
+export function brickFacadeKit(world) {
+  let K = facKits.get(world); if (K) return K;
+  const lite = !!world.ctx?.lite, S = lite ? 512 : 1024, renderer = world.ctx?.renderer ?? null, aniso = lite ? 4 : Math.min(8, renderer?.capabilities?.getMaxAnisotropy?.() ?? 8);
+  const eager = (t) => (lite ? facEagerUpload(renderer, t) : t);   // phones: upload now and drop the canvas; desktop: leave the normal lazy-upload path alone
+  const { BAY, FL, TB, TF, SILL, WH, WW } = FAC, px = S / (TB * BAY), py = S / (TF * FL), ch = S / FAC_ROWS, bl = S / FAC_COLS, ww = WW * px;
+  const wins = facWins(TB, TF, BAY, FL, SILL, WH, S, px, py);
+  const LIN = 0.2 * py, LW = ww + 0.24 * px, inset = 0.035 * px, fw = 0.06 * px;   // lintel height / width, frame inset / width (diffuse-resolution windows)
+  // ---- height (-> normal) + roughness, shared by every variant: its own (lower on phones) resolution, since only the
+  // raised-mortar / window-reveal shading comes off this pass, never the brick colour ----
+  const HS = lite ? FAC_NORMAL_RES_LITE : S, hpx = HS / (TB * BAY), hpy = HS / (TF * FL), hch = HS / FAC_ROWS, hbl = HS / FAC_COLS, hww = WW * hpx;
+  const hwins = HS === S ? wins : facWins(TB, TF, BAY, FL, SILL, WH, HS, hpx, hpy);
+  const hLIN = 0.2 * hpy, hLW = hww + 0.24 * hpx, hInset = 0.035 * hpx, hFw = 0.06 * hpx;
+  const [hc, hg] = canvas(HS, HS), [rc, rg] = canvas(HS, HS);
+  hg.fillStyle = '#c8c8c8'; hg.fillRect(0, 0, HS, HS); rg.fillStyle = 'rgb(0,240,0)'; rg.fillRect(0, 0, HS, HS);
+  { const lw = lite ? 1 : 1.2; hg.fillStyle = '#a0a0a0'; for (let r = 0; r < FAC_ROWS; r++) { const y = r * hch; hg.fillRect(0, y, HS, lw); for (let x = (r & 1) ? -hbl / 2 : 0; x < HS; x += hbl) hg.fillRect(x, y, lw, hch); } }
+  const [pc, pg] = canvas(HS, HS); pg.drawImage(hc, 0, 0);   // plain brick (party walls): courses only
+  for (const w of hwins) { const x0 = w.cx - hww / 2;
+    hg.fillStyle = '#e4e4e4'; hg.fillRect(w.cx - hLW / 2, w.yT - 3 - hLIN, hLW, hLIN);   // the cast-stone lintel stands proud
+    hg.fillStyle = '#202020'; hg.fillRect(x0 - 3, w.yT - 3, hww + 6, w.yB - w.yT + 6);
+    hg.fillStyle = '#707070'; hg.fillRect(x0 + hInset, w.yT + hInset, hww - hInset * 2, w.yB - w.yT - hInset);
+    hg.fillStyle = '#404040'; hg.fillRect(x0 + hInset + hFw, w.yT + hInset + hFw, hww - 2 * hInset - 2 * hFw, w.yB - w.yT - hInset - 2 * hFw);
+    hg.fillStyle = '#ffffff'; hg.fillRect(x0 - 0.08 * hpx, w.yB, hww + 0.16 * hpx, 0.07 * hpy);
+    rg.fillStyle = 'rgb(0,200,0)'; rg.fillRect(w.cx - hLW / 2, w.yT - 3 - hLIN, hLW, hLIN); rg.fillRect(x0 - 0.08 * hpx, w.yB, hww + 0.16 * hpx, 0.07 * hpy);
+    rg.fillStyle = 'rgb(0,120,0)'; rg.fillRect(x0 + hInset, w.yT + hInset, hww - hInset * 2, w.yB - w.yT - hInset);
+    rg.fillStyle = 'rgb(0,28,0)'; rg.fillRect(x0 + hInset + hFw, w.yT + hInset + hFw, hww - 2 * hInset - 2 * hFw, w.yB - w.yT - hInset - 2 * hFw); }
+  const normalFrom = (cv, strength) => {
+    const src = cv.getContext('2d').getImageData(0, 0, HS, HS).data, [nc, ng] = canvas(HS, HS), out = ng.createImageData(HS, HS), d = out.data;
+    const h = (x, y) => src[(((y + HS) % HS) * HS + ((x + HS) % HS)) * 4] / 255;
+    for (let y = 0; y < HS; y++) for (let x = 0; x < HS; x++) { const dx = (h(x + 1, y) - h(x - 1, y)) * strength, dy = (h(x, y + 1) - h(x, y - 1)) * strength, L = Math.hypot(dx, dy, 1), i = (y * HS + x) * 4;
+      d[i] = (-dx / L * 0.5 + 0.5) * 255; d[i + 1] = (dy / L * 0.5 + 0.5) * 255; d[i + 2] = (1 / L * 0.5 + 0.5) * 255; d[i + 3] = 255; }
+    ng.putImageData(out, 0, 0); return facTex(nc, false, aniso);
+  };
+  const normal = eager(normalFrom(hc, 2.2)), normalPlain = eager(normalFrom(pc, 2.2)), rough = eager(facTex(rc, false, aniso));
+  // ---- night: ~35% of the flats lit (tungsten / warm white / TV blue), some behind a blind; desktop only ----
+  let lit = null;
+  if (!lite) { const [lc, lg] = canvas(S, S); lg.fillStyle = '#000'; lg.fillRect(0, 0, S, S);
+    for (const w of wins) { const k = (w.rnd * 9301 + w.cx * 0.37 + w.f * 0.71) % 1; if (k > 0.36) continue;
+      const x0 = w.cx - ww / 2 + 0.1 * px, x1 = w.cx + ww / 2 - 0.1 * px, yT = w.yT + 0.1 * py, yB = w.yB - 0.06 * py, col = k < 0.2 ? '#ffc98a' : k < 0.3 ? '#ffe7c4' : '#9fb8ff';
+      const gr = lg.createLinearGradient(0, yT, 0, yB); gr.addColorStop(0, col); gr.addColorStop(1, k < 0.3 ? '#b8804a' : '#5a6aa8'); lg.fillStyle = gr; lg.fillRect(x0, yT, x1 - x0, yB - yT);
+      if (w.rnd > 0.62) { lg.fillStyle = 'rgba(0,0,0,0.55)'; lg.fillRect(x0, yT, x1 - x0, (yB - yT) * 0.45); } }
+    lit = facTex(lc, true, aniso); }
+  // ---- diffuse variants ----
+  const brickFill = (g, r, c) => {
+    g.fillStyle = c.mortar; g.fillRect(0, 0, S, S);
+    for (let row = 0; row < FAC_ROWS; row++) { const y = row * ch; for (let x = (row & 1) ? -bl / 2 : 0; x < S; x += bl) { const v = r(); g.fillStyle = v < 0.15 ? c.dark : v > 0.88 ? c.light : c.base; g.fillRect(x + 0.6, y + 0.7, bl - 1.2, ch - 1.1);
+      if (r() < 0.5) { g.globalAlpha = 0.12; g.fillStyle = r() < 0.5 ? '#000' : '#fff'; g.fillRect(x + 1, y + 1, bl - 2, ch - 2); g.globalAlpha = 1; } } }
+    for (let i = 0; i < 2400 * S / 1024; i++) { g.fillStyle = `rgba(${r() < 0.5 ? '0,0,0' : '255,240,225'},${r() * 0.08})`; g.fillRect(r() * S, r() * S, 1 + r() * 2, 1 + r() * 2); }   // micro grain
+    for (let i = 0; i < 600; i++) { g.fillStyle = `rgba(${r() < 0.6 ? '30,18,14' : '190,150,120'},${r() * 0.06})`; g.fillRect(r() * S, r() * S, (8 + r() * 40) * S / 1024, (3 + r() * 12) * S / 1024); }   // weather / soot blotches
+  };
+  // Sunset Park: a red-and-gold 福 diamond, or a bilingual card taped in the lower sash
+  const card = (g, cx, cy, s, fu) => { g.save(); g.translate(cx, cy); g.textAlign = 'center'; g.textBaseline = 'middle';
+    if (fu) { g.rotate(Math.PI / 4); g.fillStyle = '#c8141c'; g.fillRect(-s / 2, -s / 2, s, s); g.strokeStyle = '#e8b83a'; g.lineWidth = Math.max(1, s * 0.06); g.strokeRect(-s * 0.42, -s * 0.42, s * 0.84, s * 0.84); g.rotate(-Math.PI / 4); g.fillStyle = '#f2c94a'; g.font = `700 ${s * 0.62}px ${CJK_FONT}`; g.fillText('福', 0, s * 0.04); }
+    else { g.fillStyle = '#f4f1e6'; g.fillRect(-s * 0.45, -s * 0.32, s * 0.9, s * 0.64); g.fillStyle = '#b3121e'; g.font = `700 ${s * 0.26}px ${CJK_FONT}`; g.fillText('出租', 0, -s * 0.1); g.font = `700 ${s * 0.13}px Helvetica, Arial, sans-serif`; g.fillText('FOR RENT', 0, s * 0.17); }
+    g.restore(); };
+  const windows = (g, o) => {
+    for (const w of wins) {
+      const x0 = w.cx - ww / 2, x1 = w.cx + ww / 2, yT = w.yT, yB = w.yB;
+      { const gr = g.createLinearGradient(0, yB, 0, yB + 0.55 * py); gr.addColorStop(0, 'rgba(25,15,12,0.22)'); gr.addColorStop(1, 'rgba(25,15,12,0)'); g.fillStyle = gr; g.fillRect(x0 + 4, yB, ww - 8, 0.55 * py); }   // rain / soot under the sill
+      // the head: a cast-stone lintel (a keystone on some blocks) or a soldier course of brick
+      const lx = w.cx - LW / 2, ly = yT - 3 - LIN;
+      if (o.soldier) { g.fillStyle = o.mortar; g.fillRect(lx, ly, LW, LIN); for (let x = lx, n = 0; x < lx + LW - 1; x += ch * 1.05, n++) { g.fillStyle = n % 3 === 1 ? o.dark : o.base; g.fillRect(x + 0.6, ly + 0.6, ch * 1.05 - 1.2, LIN - 1.2); } }
+      else { g.fillStyle = '#cfc7b6'; g.fillRect(lx, ly, LW, LIN); g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(lx, ly + LIN - 2, LW, 2);
+        if (o.keystone) { const kw = 0.2 * px; g.fillStyle = '#e1dacb'; g.beginPath(); g.moveTo(w.cx - kw / 2, ly - 0.04 * py); g.lineTo(w.cx + kw / 2, ly - 0.04 * py); g.lineTo(w.cx + kw * 0.36, ly + LIN); g.lineTo(w.cx - kw * 0.36, ly + LIN); g.fill(); g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(w.cx + kw * 0.36, ly, 1.5, LIN); } }
+      g.fillStyle = '#231a17'; g.fillRect(x0 - 3, yT - 3, ww + 6, yB - yT + 6);   // deep masonry reveal
+      g.fillStyle = '#e9e8e2'; g.fillRect(x0 + inset, yT + inset, ww - inset * 2, yB - yT - inset);   // off-white sash frame
+      const meet = yT + (yB - yT) * 0.47, k = w.rnd;
+      for (const [s0, s1, top] of [[yT + inset + fw, meet - fw * 0.4, true], [meet + fw * 0.4, yB - fw, false]]) {
+        const gx0 = x0 + inset + fw, gx1 = x1 - inset - fw, gr = g.createLinearGradient(0, s0, 0, s1), sky = k < 0.3 ? ['#7e8f9f', '#34404b'] : k < 0.6 ? ['#5d6a76', '#262d34'] : ['#98a6b2', '#46525d'];
+        gr.addColorStop(0, sky[0]); gr.addColorStop(1, sky[1]); g.fillStyle = gr; g.fillRect(gx0, s0, gx1 - gx0, s1 - s0);
+        g.fillStyle = 'rgba(255,255,255,0.10)'; g.beginPath(); g.moveTo(gx0, s1); g.lineTo(gx0 + (gx1 - gx0) * 0.45, s0); g.lineTo(gx0 + (gx1 - gx0) * 0.62, s0); g.lineTo(gx0 + (gx1 - gx0) * 0.17, s1); g.fill();
+        if (top && k > 0.62) { const f = 0.25 + ((k * 7.3) % 1) * 0.75; g.fillStyle = k > 0.85 ? '#b8a684' : '#e2ded3'; g.fillRect(gx0, s0, gx1 - gx0, (s1 - s0) * f); g.fillStyle = 'rgba(0,0,0,0.08)'; for (let y = s0 + 3; y < s0 + (s1 - s0) * f; y += 3) g.fillRect(gx0, y, gx1 - gx0, 1); }
+        if (!top && k > 0.78 && k < 0.85) { g.fillStyle = '#8b6c5a'; g.fillRect(gx0, s0, (gx1 - gx0) * 0.35, s1 - s0); }
+        if (!top && o.cards && w.card < 0.15) card(g, (gx0 + gx1) / 2, (s0 + s1) / 2, Math.min(gx1 - gx0, s1 - s0) * 0.62, w.card < 0.09);
+      }
+      g.fillStyle = '#d9d8d1'; g.fillRect(x0 + inset, meet - fw * 0.4, ww - inset * 2, fw * 0.8);         // meeting rail
+      g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(x0 + inset, yT + inset, ww - inset * 2, 0.07 * py);   // head shadow in the reveal
+      g.fillStyle = '#c9c3b5'; g.fillRect(x0 - 0.08 * px, yB, ww + 0.16 * px, 0.07 * py);                  // projecting cast-stone sill
+      g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(x0 - 0.08 * px, yB + 0.07 * py, ww + 0.16 * px, 2);
+    }
+  };
+  const diff = new Map();
+  let scratchCv = null;   // phones: every tint variant paints over the same canvas (brickFill repaints it in full) instead of allocating a new one
+  const diffuse = (key, c, o = {}) => { if (diff.has(key)) return diff.get(key);
+    if (lite && !scratchCv) { scratchCv = document.createElement('canvas'); scratchCv.width = S; scratchCv.height = S; }
+    const [cv, g] = lite ? [scratchCv, scratchCv.getContext('2d')] : canvas(S, S);
+    brickFill(g, facRng(o.seed ?? [...key].reduce((a, ch2) => a * 31 + ch2.charCodeAt(0), 7)), c); if (!o.plain) windows(g, { ...c, ...o });
+    const t = eager(facTex(cv, true, aniso)); diff.set(key, t); return t; };
+  const PLAIN = { base: '#d8d1ca', dark: '#c2b9b0', light: '#e6e0d9', mortar: '#ece8e2' };   // neutral: tinted per building by vertex / material colour
+  K = { S, lite, lit, normal, normalPlain, rough,
+    /** windowed brick: its own diffuse on the shared normal / roughness / night maps (W.night drives emissiveIntensity) */
+    mat: (key, c, o = {}, extra = {}) => new THREE.MeshStandardMaterial({ map: diffuse(key, c, o), normalMap: normal, roughnessMap: rough, roughness: 1, metalness: 0, envMapIntensity: 0.55, emissiveMap: lit, emissive: lit ? 0xffffff : 0x000000, emissiveIntensity: 0, ...extra }),
+    /** windowless party / flank walls: neutral brick + the courses-only normal map */
+    plainMat: (extra = {}) => new THREE.MeshStandardMaterial({ map: diffuse('plain', PLAIN, { plain: true, seed: FAC_PLAIN_SEED }), normalMap: normalPlain, roughness: 0.94, metalness: 0, envMapIntensity: 0.5, ...extra }),
+  };
+  facKits.set(world, K); return K;
+}
+/** facade UVs on a box in tile units: whole bays across each face (n = round(width / bay)), storeys counted up from y0 (m above the box's foot) */
+export function facadeBoxUV(g, w, h, d, y0 = 0) { const uv = g.attributes.uv, n = g.attributes.normal, tileH = FAC.TF * FAC.FL;
+  for (let i = 0; i < uv.count; i++) { const along = Math.abs(n.getX(i)) > 0.5 ? d : w, nb = Math.max(1, Math.round(along / FAC.BAY)); uv.setXY(i, uv.getX(i) * nb / FAC.TB, (uv.getY(i) * h - y0) / tileH); } return g; }
+/** some faces of an indexed BoxGeometry (0 +x, 1 -x, 2 +y, 3 -y, 4 +z, 5 -z) as their own non-indexed geometry */
+export function boxFaces(g, faces) { const idx = g.index.array, keep = []; for (const f of faces) for (let i = f * 6; i < f * 6 + 6; i++) keep.push(idx[i]); const q = g.clone(); q.setIndex(keep); q.clearGroups(); return q.toNonIndexed(); }
+/** world-metre UVs on a box already translated into place: party walls tile their brick continuously */
+export function metreUV(g, su = FAC.TB * FAC.BAY, sv = FAC.TF * FAC.FL) { const p = g.attributes.position, n = g.attributes.normal, uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) { const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)); uv.setXY(i, (ax > 0.5 ? p.getZ(i) : p.getX(i)) / su, (ay > 0.5 ? p.getZ(i) : p.getY(i)) / sv); } return g; }
