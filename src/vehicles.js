@@ -897,6 +897,10 @@ function buildUI(ctx) {
 #vehui .vb.show{display:flex}#vehui .vb.down{background:rgba(233,162,59,.8);transform:scale(.94)}
 #vehui .enter{left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);width:128px;height:50px;margin-left:-64px}
 #vehui .cam{left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 22px);width:64px;height:50px;margin-left:76px;background:rgba(10,14,20,.5);border-color:rgba(255,255,255,.45);font-size:13px}
+/* landscape, driving a car: centre-bottom is a stretch for one thumb on a wide phone, and the bottom-right corner is free
+   once FIRE etc. hide (touch.js .stow) - a bike keeps those buttons live for drive-by shooting, so it keeps the centre spot */
+@media (orientation:landscape){#vehui.car .enter{left:auto;right:calc(env(safe-area-inset-right,0px) + 20px);bottom:calc(env(safe-area-inset-bottom,0px) + 20px);margin-left:0}
+#vehui.car .cam{left:auto;right:calc(env(safe-area-inset-right,0px) + 20px);bottom:calc(env(safe-area-inset-bottom,0px) + 78px);margin-left:0}}
 #vehui .cam.on{background:rgba(233,162,59,.42);border-color:#e9a23b}
 #touch .act.vhdup{display:none!important}`;
   document.head.appendChild(st);
@@ -918,6 +922,8 @@ function updateUI(ctx) {
   }
   if (label !== U.label) { U.label = label; U.enter.textContent = label; U.enter.classList.toggle('show', !!label); }
   U.cam.classList.toggle('show', playing && !!S.mounted); U.cam.classList.toggle('on', S.chase);
+  U.root.classList.toggle('car', !!(S.mounted?.spec?.car || (!S.mounted && S.api.nearBike?.spec?.car)));   // landscape: a car's ENTER/CAM can move to the bottom-right corner (FIRE etc. are stowed); a bike's can't - it keeps its own
+
   // touch.js' contextual button duplicates ours for RIDE / GET OFF — hide it then (it still shows TAKE for weapon pickups)
   const act = U.act || (U.act = document.querySelector('#touch .act'));
   if (act) { const t = act.textContent || ''; act.classList.toggle('vhdup', !!label && (t === 'RIDE' || t === 'GET OFF') && (!!S.mounted || !!S.api.nearBike)); }

@@ -585,7 +585,11 @@ function qa() {
 const CSS = `
 .uber-app{position:fixed;right:18px;top:96px;z-index:44;width:224px;padding:10px 12px 12px;border-radius:24px;background:#0b0b0b;border:3px solid #2e2e30;box-shadow:0 8px 30px rgba(0,0,0,.55);color:#f4f4f4;font:500 12.5px system-ui,-apple-system,Arial;pointer-events:none}
 .uber-app.pick,.uber-app button{pointer-events:auto}
-.uber-app.touch{top:calc(env(safe-area-inset-top,0px) + 64px);right:calc(env(safe-area-inset-right,0px) + 10px);width:200px;font-size:11.5px}
+/* top offset clears inventory.js's weapon strip chip (top-right too, portrait: top ~92px + its own height) */
+.uber-app.touch{top:calc(env(safe-area-inset-top,0px) + 134px);right:calc(env(safe-area-inset-right,0px) + 10px);width:200px;font-size:11.5px;max-height:calc(100vh - env(safe-area-inset-top,0px) - 154px);overflow-y:auto}
+/* landscape phone: top-right is also where the fire / jump / crouch / swap buttons live (the viewport's too short for both) -
+   top-centre, capped low, is clear of the minimap (top-left) and that whole cluster (right side) */
+@media (orientation:landscape){.uber-app.touch{right:auto;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top,0px) + 6px);max-height:min(176px,40vh)}}
 .uber-app header{display:flex;align-items:center;gap:8px;margin-bottom:6px}.uber-app header b{font:800 18px system-ui;letter-spacing:-.02em}.uber-app header .cash{flex:1;opacity:.7}
 .uber-app header button{border:0;background:#222;color:#ddd;border-radius:50%;width:26px;height:26px;cursor:pointer}
 .uber-app .ub-body p{margin:3px 0;line-height:1.3}.uber-app .ub-body p.l0{opacity:.75}.uber-app .ub-body p.l1{font-weight:700;font-size:1.08em}.uber-app .ub-q{font-weight:700;font-size:14px}.uber-app .ub-q small{opacity:.6;font-weight:500}

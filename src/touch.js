@@ -1,6 +1,7 @@
 // Mobile / touch controls. Owned by: main. Renders a CoD-Mobile-style overlay and drives ctx.input (axis, look, buttons).
 // Left half: floating virtual stick (auto-sprint when pushed to the rim). Right half: drag to look, quick tap (no drag) toggles ADS; button cluster for fire/ADS/jump/crouch/reload/swap/grenade.
-// Weapon buttons dim + go inert while the weapon is stowed (elevator / passenger / driving a car).
+// Weapon buttons hide while the weapon is stowed (elevator / craft / driving a car without a pistol); JUMP becomes the
+// handbrake + a HORN button appears while actually driving a car, and SWAP/CROUCH hide while riding any vehicle (car or bike).
 const CSS = `
 #touch{position:fixed;inset:0;z-index:30;pointer-events:none;-webkit-user-select:none;user-select:none;touch-action:none;font-family:"Barlow Condensed","Arial Narrow",system-ui,sans-serif}
 #touch.on{pointer-events:auto}
@@ -27,8 +28,20 @@ const CSS = `
 #touch .act.show{display:flex}
 #touch .win{left:calc(env(safe-area-inset-left,0px) + 136px);bottom:calc(env(safe-area-inset-bottom,0px) + 290px);width:56px;height:56px;font-size:11px;display:none}
 #touch .win.show{display:flex}
-#touch.stow .fire,#touch.stow .fireL,#touch.stow .ads,#touch.stow .reload,#touch.stow .nade{opacity:.22;pointer-events:none}
-#touch .fireL{font-size:11px;left:calc(env(safe-area-inset-left,0px) + 30px);bottom:calc(env(safe-area-inset-bottom,0px) + 230px);width:70px;height:70px;background:rgba(160,40,30,.3);border-color:rgba(255,120,100,.45)}
+/* stowed (elevator / craft / driving a car without a pistol): the weapon buttons do nothing, so they're gone, not just dim -
+   that frees the slot a HORN button reuses while actually driving a car (jump stays, repurposed as the handbrake below) */
+#touch.stow .fire,#touch.stow .fireL,#touch.stow .ads,#touch.stow .reload,#touch.stow .nade,#touch.stow .zoom{display:none}
+#touch.stow:not(.car) .jump{display:none}
+/* riding any vehicle (car or bike): swapping guns / crouching are no-ops and only crowd the ENTER-EXIT / CAM pills (vehicles.js) */
+#touch.driving .swap,#touch.driving .crouch{display:none}
+#touch .fireL{font-size:11px;left:calc(env(safe-area-inset-left,0px) + 80px);bottom:calc(env(safe-area-inset-bottom,0px) + 90px);width:70px;height:70px;background:rgba(160,40,30,.3);border-color:rgba(255,120,100,.45)}
+/* the nade slot: hidden alongside it while stowed, so a HORN button (driving a car) can borrow the spot without a new clash */
+#touch .horn{display:none;right:calc(env(safe-area-inset-right,0px) + 236px);bottom:calc(env(safe-area-inset-bottom,0px) + 100px);width:54px;height:54px;font-size:11px}
+#touch.car .horn{display:flex}
+#touch.car .nade{display:none}
+#touch .jump.handbrake{font-size:10px}
+/* landscape (short viewport): the minimap (top-left) reaches further down than the ACT pill's usual top-left slot allows for */
+@media (orientation:landscape){#touch .act{left:calc(env(safe-area-inset-left,0px) + 150px)}}
 `;
 
 let S = null;
@@ -50,7 +63,8 @@ export async function init(ctx) {
     <div class="btn nade">NADE</div>
     <div class="btn zoom">ZOOM</div>
     <div class="btn act">TAKE</div>
-    <div class="btn win">WIN</div>`;
+    <div class="btn win">WIN</div>
+    <div class="btn horn">HORN</div>`;
   document.body.appendChild(root);
   const q = (c) => root.querySelector(c);
   const input = ctx.input; const T = input.touch;
@@ -99,6 +113,8 @@ export async function init(ctx) {
   hold(q('.zoom'), () => { T.zoom = true; }, () => { T.zoom = false; });   // weapons.js: hold to zoom (rooftops)
   S.act = q('.act'); tap(S.act, () => { input.pressed.add('KeyF'); }); // contextual: pick up weapon / mount / dismount (same F both systems read)
   S.win = q('.win'); tap(S.win, () => press('KeyO'));   // roll a car's window up / down (driving, or any passenger seat)
+  // horn: hangkit.js only listens for a real keydown (friends hear it over net.js), not the polled input.keys touch buttons use elsewhere
+  tap(q('.horn'), () => { try { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyQ', bubbles: true })); } catch {} });
   tap(q('.pause'), () => ctx.setState('paused'));
 
   const show = (v) => { root.classList.toggle('hidden', !v); root.classList.toggle('on', v); if (!v) { clearStick(); S.looks.clear(); S.clearFire(); setAds(false); } };
@@ -120,6 +136,9 @@ export function update(dt, ctx) {
   const m = ctx.player?.mounted, stowed = !!(m && (m.elevator || m.craft || (m.spec?.car && (ctx.weapons?.current?.spec?.slot ?? 0) !== 1)));   // passengers + pistol drivers shoot
   S.win.classList.toggle('show', ctx.state === 'playing' && !!(m?.spec?.car || m?.passenger));   // a window to roll: driving, or any passenger seat (friend's car, a stolen car, the Uber)
   if (stowed !== S.stowed) { S.stowed = stowed; S.root.classList.toggle('stow', stowed); if (stowed) { S.clearFire(); S.setAds?.(false); } }
+  // driving a car: JUMP (Space) is the handbrake instead (vehicles.js reads it the same way), and a HORN button appears (hangkit.js, Q)
+  const carDrive = !!m?.spec?.car; if (carDrive !== S.carDrive) { S.carDrive = carDrive; S.root.classList.toggle('car', carDrive); const j = S.root.querySelector('.jump'); j.textContent = carDrive ? 'E-BRAKE' : 'JUMP'; j.classList.toggle('handbrake', carDrive); }
+  S.root.classList.toggle('driving', !!ctx.vehicles?.mounted);   // riding any vehicle (car or bike): SWAP / CROUCH are no-ops, hidden so they don't crowd vehicles.js's own ENTER-EXIT / CAM pills
   // fire buttons say what they do (the left one is a second trigger for the left thumb)
   const melee = ctx.weapons?.current?.mode === 'MELEE', ft = melee ? (ctx.weapons?.current?.id === 'fists' ? 'PUNCH' : 'SLASH') : 'FIRE';
   { const pistol = (ctx.weapons?.current?.spec?.slot ?? 0) === 1 || /m9|deagle|makarov|glock/i.test(ctx.weapons?.currentId || ''), portrait = innerHeight > innerWidth;   // declutter: ZOOM only with a long gun, one trigger in portrait
