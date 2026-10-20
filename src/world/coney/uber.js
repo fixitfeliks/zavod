@@ -39,8 +39,12 @@ const GAP_LONG = 4.5, GAP_SHORT = 2.6;                                 // s of f
 // Coney's ways out: up the Belt (Bay Ridge), east on Surf (Brighton); the other zones leave from 8th Ave's west end / Brighton Ave's
 const OUT = { coney: { tav: [-92, -545], ferry: [-92, -545], bri: [430, -95] }, tav: [AVE8.X0 + 4, TZ.oz], bri: [BRI.X0 + 20, BRI.ZC] };
 // not driving through anyone: the owner's client holds the timeline back (r.hA on the approach, r.hR on the ride, ms) while a vehicle is in
-// the way and sends it with the rate it is holding at; every copy runs the same hold, so friends still see the car where it is
-const UBER_JAM = 10000;   // ms held by the same jam before the traffic car in front is recycled
+// the way and sends it with the rate it is holding at; every copy runs the same hold, so friends still see the car where it is. A
+// blocker that just won't clear (an 8th Ave car stopped nose to nose, a parked car the hand-built tav/bri graphs didn't route around)
+// gets a give-up after UBER_STUCK ms: a Coney traffic car gives way by leaving (as before); anything else (a parked car, a bus, an
+// 8th Ave / Brighton avenue car) can't be recycled, so the Uber eases around it with a lane offset (r.swerve) instead.
+const UBER_STUCK = 8000;   // ms stuck behind the same thing before giving up on waiting it out
+const SWERVE_MAX = 2.4, SWERVE_RATE = 2.4;   // m / m-per-s: the lane offset eased into (fast, to clear it sooner) and back out of
 const FOLLOW_GAP = 2.5, FOLLOW_T = 1.2, HOLD_HZ = 4, KERB_IGNORE = 30;   // m bumper gap at a stop / s of headway / hold updates a second / m before a stop where parked kerb cars stop counting (it pulls in beside them)
 const NZ_FAR = 20000;                                                  // the Narrows (ferry.js) are past this world z: no signal out there
 let U = null;
@@ -240,7 +244,7 @@ function onNet(m) {
   if (m.a === 'go' && num(m.tg) && f === r.owner) r.tg = m.tg;
   else if (m.a === 'in' && Number.isInteger(m.s) && m.s >= 0 && m.s < SEATS.length && f) r.riders.set(f, m.s);
   else if (m.a === 'out' && f) r.riders.delete(f);
-  else if (m.a === 'h' && f === r.owner && num(m.ha) && num(m.hr) && num(m.k)) { r.hA = m.ha; r.hR = m.hr; r.hk = Math.max(0, Math.min(1, m.k)); }
+  else if (m.a === 'h' && f === r.owner && num(m.ha) && num(m.hr) && num(m.k)) { r.hA = m.ha; r.hR = m.hr; r.hk = Math.max(0, Math.min(1, m.k)); if (num(m.sw)) r.swerve = m.sw; }
   else if (m.a === 'x' && f === r.owner) dropRide(r, `${U.ctx.net?.peer?.(f)?.name || 'Your friend'} cancelled the Uber`);
 }
 
@@ -356,23 +360,34 @@ function carSolid(r, on) {
  *  back) and sets the rate from the gap ahead, and broadcasts; the others run the owner's rate between messages */
 function hold(r, st, dt, now) {
   const el = r.lastNow != null ? Math.max(0, now - r.lastNow) : 0, o = r.sol; r.lastNow = now;
-  const moving = st.vis && (st.phase === 'coming' || st.phase === 'riding') && st.zone === 'coney';   // Coney's streets only for now: on 8th Ave it waits for ever behind a stopped avenue car (not understood yet)
+  const moving = st.vis && (st.phase === 'coming' || st.phase === 'riding');
   const back = (ms) => { if (ms <= 0) return; if (st.phase === 'coming') r.hA += ms; else r.hR += ms; at(r, now); };
   if (!moving || dt <= 0 || !el) { o.x = st.x; o.z = st.z; o.h = st.h; return; }
+  const rx = Math.cos(st.h), rz = -Math.sin(st.h);   // a side, perpendicular to the heading, to ease into around a blocker that won't clear
+  const sx = st.x + rx * (r.swerve || 0), sz = st.z + rz * (r.swerve || 0);
   if (r.owner === (U.ctx.net?.id || 'me')) {
     const P = st.P, left = P ? P.L - st.s : 0;
     o.ignore = left < KERB_IGNORE ? (q) => !!q.parked : null;   // kerb cars at the stop: it pulls in beside them
-    const by = moveBlocked(o, st.x, st.z, st.h);   // o is still where it was last frame
+    const by = moveBlocked(o, sx, sz, st.h);   // o is still where it was last frame
     if (by) back(el);
-    const a = solidAhead(o, st.x, st.z, st.h, o.hl, o.hw, 40, 0.05);
+    const a = solidAhead(o, sx, sz, st.h, o.hl, o.hw, 40, 0.05);
     r.hk = by ? 0 : a.o ? Math.max(0, Math.min(1, (a.gap - FOLLOW_GAP) / Math.max(3, st.v * FOLLOW_T) + Math.max(0, a.v) / Math.max(st.v, 1))) : 1;
     r.hBy = by || (r.hk < 1 ? a.o : null); o.ignore = null;
-    r.heldT = r.hk < 0.05 && r.hBy ? (r.heldT || 0) + el : 0;
-    if (r.heldT > UBER_JAM && r.hBy?.kind && !r.hBy.bus) { U.W.traffic?.recycle?.(r.hBy); r.heldT = 0; }   // a queue that won't clear (a car stuck facing it): the traffic car gives way by leaving
+    // held time decays rather than snapping to 0: a lane offset barely nudges hk up for a frame or two as it eases out, and a hard
+    // reset there flapped the swerve on and off forever instead of ever growing past a few cm (it needs a few clear seconds to count)
+    r.heldT = r.hk < 0.05 && r.hBy ? (r.heldT || 0) + el : Math.max(0, (r.heldT || 0) - el);
+    let wantSwerve = false;
+    if (r.heldT > UBER_STUCK && r.hBy) {
+      if (r.hBy.kind && !r.hBy.bus) { U.W.traffic?.recycle?.(r.hBy); r.heldT = 0; r.swerveSide = 0; }   // a Coney traffic jam: it gives way by leaving, same as before
+      else { r.swerveSide = r.swerveSide || (((r.hBy.x - sx) * rx + (r.hBy.z - sz) * rz) < 0 ? 1 : -1); wantSwerve = true; }   // a parked car, a bus, or an 8th Ave / Brighton avenue car: nothing to recycle, so go around it
+    } else if (r.hk > 0.9) r.swerveSide = 0;
+    const swMax = Math.max(SWERVE_MAX, (r.hBy?.hw || 0) + o.hw + 1);   // enough to clear whatever it's going around (a bus is wider than the fixed default)
+    const target = wantSwerve ? r.swerveSide * swMax : 0, d = target - (r.swerve || 0);
+    r.swerve = (r.swerve || 0) + Math.sign(d) * Math.min(Math.abs(d), SWERVE_RATE * el / 1000);
     if (!by) back(el * (1 - r.hk));
-    if (Math.abs(r.hk - (r.kSent ?? 1)) > 0.2 || (r.hk < 1 && now - r.hT > 1000 / HOLD_HZ) || (r.hk === 1 && r.kSent < 1)) { r.hT = now; r.kSent = r.hk; U.ctx.net?.send?.('uber', { a: 'h', id: r.id, ha: Math.round(r.hA), hr: Math.round(r.hR), k: +r.hk.toFixed(2) }); }
+    if (Math.abs(r.hk - (r.kSent ?? 1)) > 0.2 || (r.hk < 1 && now - r.hT > 1000 / HOLD_HZ) || (r.hk === 1 && r.kSent < 1)) { r.hT = now; r.kSent = r.hk; U.ctx.net?.send?.('uber', { a: 'h', id: r.id, ha: Math.round(r.hA), hr: Math.round(r.hR), k: +r.hk.toFixed(2), sw: +(r.swerve || 0).toFixed(2) }); }
   } else back(el * (1 - r.hk));
-  st.v *= r.hk; o.x = st.x; o.z = st.z; o.h = st.h;
+  st.v *= r.hk; st.x = sx; st.z = sz; o.x = sx; o.z = sz; o.h = st.h;
 }
 function dropRide(r, msg) {
   if (r.gone) return; r.gone = true; carSolid(r, false); if (r.car) U.world.scene.remove(r.car); U.rides.delete(r.id);
@@ -544,7 +559,7 @@ function drawMap(r) {
 function qa() {
   return {
     state: () => { const r = U.cur, p = U.ctx.player, st = r?.st; return { cash: K.cash, phone: K.has('phone'), open: U.el.style.display !== 'none', picking: !!U.picking, seat: U.seat, mounted: !!p.mounted?.uber, rides: U.rides.size, winOpen: U.winOpen,
-      cur: r ? { hold: [Math.round(r.hA), Math.round(r.hR), +r.hk.toFixed(2)], by: r.hBy ? [r.hBy.parked ? 'parked' : r.hBy.kind || (r.hBy.cop != null ? 'cop' : r.hBy.veh ? 'player' : 'x'), +r.hBy.x.toFixed(1), +r.hBy.z.toFixed(1), +(r.hBy.v || 0).toFixed(1)] : null, id: r.id, phase: st.phase, zone: st.zone, dest: r.dest.id, driver: r.drv[0], car: [+st.x.toFixed(1), +st.z.toFixed(1), +st.h.toFixed(2)], v: +st.v.toFixed(1), riders: [...r.riders.values()], tg: r.tg, approachT: +r.appr.T.toFixed(1), approachL: +r.appr.L.toFixed(0), legs: r.legs.map((l) => [l.z, +l.P.L.toFixed(0), +l.P.T.toFixed(1)]), driverModel: !!r.driver, avatar: r.driver?.avatar, lines: statusLines() } : null,
+      cur: r ? { hold: [Math.round(r.hA), Math.round(r.hR), +r.hk.toFixed(2)], sw: +(r.swerve || 0).toFixed(2), by: r.hBy ? [r.hBy.parked ? 'parked' : r.hBy.kind || (r.hBy.cop != null ? 'cop' : r.hBy.veh ? 'player' : 'x'), +r.hBy.x.toFixed(1), +r.hBy.z.toFixed(1), +(r.hBy.v || 0).toFixed(1)] : null, id: r.id, phase: st.phase, zone: st.zone, dest: r.dest.id, driver: r.drv[0], car: [+st.x.toFixed(1), +st.z.toFixed(1), +st.h.toFixed(2)], v: +st.v.toFixed(1), riders: [...r.riders.values()], tg: r.tg, approachT: +r.appr.T.toFixed(1), approachL: +r.appr.L.toFixed(0), legs: r.legs.map((l) => [l.z, +l.P.L.toFixed(0), +l.P.T.toFixed(1)]), driverModel: !!r.driver, avatar: r.driver?.avatar, lines: statusLines() } : null,
       eyeOverRoad: +(U.ctx.camera.position.y).toFixed(2), pos: p.position.toArray().map((v) => +v.toFixed(1)), ui: U.el.textContent }; },
     card: () => { const b = U.el.getBoundingClientRect(); return { mini: U.el.classList.contains('mini'), w: Math.round(b.width), h: Math.round(b.height), x: Math.round(b.x), y: Math.round(b.y), vw: innerWidth, vh: innerHeight }; }, tapCard: () => U.el.querySelector('.ub-body').click(),
     request: (id) => request(id), open: () => toggleApp(), board: (seat = -1) => { const r = boardable(); if (r) board(r, seat); return !!r; }, out: () => getOut(false),

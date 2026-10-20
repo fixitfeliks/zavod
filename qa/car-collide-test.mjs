@@ -6,7 +6,7 @@
 import pw from 'playwright-core';
 const { chromium } = pw;
 const PORT = process.env.PORT || 8790, BASE = `http://localhost:${PORT}/?qa=1&map=coney&mode=chill&ai=0&time=day`;
-const TRAFFIC_S = +(process.env.TRAFFIC_S || 120), RIDE_MAX_S = 240;
+const TRAFFIC_S = +(process.env.TRAFFIC_S || 120), RIDE_MAX_S = 300;   // a ride that gives way with an 8 s lane-offset instead of an instant (visible) recycle can run a little longer
 const b = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=metal', '--mute-audio', '--disable-renderer-backgrounding', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows'] });
 let fails = 0; const ok = (c, m, x = '') => { console.log((c ? 'PASS ' : 'FAIL ') + m, x); if (!c) fails++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -64,5 +64,23 @@ ok(!last?.cur || last.cur.phase === 'arrived' || last.seat < 0, 'the ride gets t
 ok(C.uberSamples > 100, 'the Uber sampled through the ride', C.uberSamples);
 ok(!C.uberHits, 'zero overlaps with the Uber', C.uberHits ? C.hits.slice(0, 8).join(' | ') : '');
 ok(!C.nHits, 'zero vehicle-vehicle overlaps during the ride', C.nHits ? C.hits.slice(0, 8).join(' | ') : '');
+
+// ---- 3. an Uber ride out to 8th Ave (Soc Tav): the hand-built tav graph, its parked kerb cars and the avenue traffic, real time --------
+await pg.waitForFunction(() => !window.__game.uber.state().cur, null, { timeout: 10000 }).catch(() => {});   // the last ride's getOut()/dropRide() lands a moment after "arrived"
+await pg.evaluate(() => { const C = window.__col; C.hits = []; C.nHits = 0; C.uberHits = 0; C.uberSamples = 0; });
+ok(await pg.evaluate(() => window.__game.uber.request('soctav')), 'Uber to Soc Tav booked');
+await pg.waitForFunction(() => window.__game.uber.state().cur?.phase === 'waiting', null, { timeout: 120000 }).catch(() => {});
+u = await pg.evaluate(() => window.__game.uber.state()); ok(u.cur?.phase === 'waiting', 'the Uber reaches 8th Ave (real time)', u.cur?.phase);
+if (u.cur) await pg.evaluate(() => { const k = window.__game.uber.kerb(), c = Math.cos(k[2]), s = Math.sin(k[2]); window.__game.teleport(k[0] + c * 2.4, 0, k[1] - s * 2.4, k[2] + Math.PI / 2, 0); });
+await sleep(500); await pg.keyboard.press('KeyF'); await sleep(500);
+u = await pg.evaluate(() => window.__game.uber.state()); ok(u.seat >= 0, 'in the Uber to Soc Tav');
+const t1 = Date.now(); last = null;
+while (Date.now() - t1 < RIDE_MAX_S * 1000) { await sleep(2000); last = await pg.evaluate(() => window.__game.uber.state()); if (process.env.V) console.log('tav', JSON.stringify([last.cur?.phase, last.cur?.car, last.cur?.hold, last.cur?.sw, last.cur?.by])); if (!last.cur || last.cur.phase === 'arrived' || last.seat < 0) break; }
+C = await pg.evaluate(() => window.__col);
+console.log(`uber (8th Ave): ${C.uberSamples} samples with the Uber near, ride ${((Date.now() - t1) / 1000).toFixed(0)} s, end ${last?.cur?.phase ?? 'dropped off'}`);
+ok(!last?.cur || last.cur.phase === 'arrived' || last.seat < 0, 'the ride to Soc Tav gets there', last?.cur?.phase);
+ok(C.uberSamples > 100, 'the Uber sampled through the 8th Ave ride', C.uberSamples);
+ok(!C.uberHits, 'zero overlaps with the Uber on 8th Ave', C.uberHits ? C.hits.slice(0, 8).join(' | ') : '');
+ok(!C.nHits, 'zero vehicle-vehicle overlaps during the 8th Ave ride', C.nHits ? C.hits.slice(0, 8).join(' | ') : '');
 await b.close();
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASS'); process.exit(fails ? 1 : 0);

@@ -12,7 +12,7 @@ import { carGeometries, carMaterials } from '../carkit.js';
 import { buildBike } from '../../vehicles/bike.js';
 import { hangkit as HK } from '../hangkit.js';
 import { pushOut } from '../../player/collision.js';
-import { solidSource, solidAhead, moveBlocked } from '../../vehicles/solids.js';
+import { solidSource, solidAhead, moveBlocked, solidsNear, obbOverlap } from '../../vehicles/solids.js';
 const SPAWN_LO = 0.05;   // m over the feet: what counts as solid when a unit is placed
 
 const EVADE_BASE = 20, EVADE_PER_STAR = 2, EVADE_MAX = 30, SEARCH_OUT = 8;   // SEARCH_OUT: s outside the search circle, unseen, before the stars clear
@@ -463,8 +463,19 @@ function updateCars(dt) {
     drive(c, dt, veh);
   }
 }
-const COP_HL = 2.4, COP_HW = 0.95, COP_GAP = 2.5, COP_LANE = 1.9;   // m: the sedan kit's half length / width; bumper gap when stopped behind someone; right of the centreline
+const COP_HL = 2.4, COP_HW = 0.95, COP_GAP = 2.5, COP_LANE = 1.9, UNSTICK_V = 3;   // m: half length / width; bumper gap; right of the centreline; m/s eased apart once overlapping
+// moveBlocked lets an already-overlapping pair stand their ground (so a car spawned atop one isn't frozen solid); nothing then ever
+// pulls them apart, so a cop that spawned on a traffic car, or got shoved into one mid-turn, could sit embraced with it forever.
+// Ease it directly away from the centre of whatever it overlaps until clear, ahead of the normal drive this frame.
+function unstick(c, dt) {
+  const o = c.sol; if (!o) return false;
+  for (const q of solidsNear(o.x, o.z, o.hl + 3)) { if (q === o || q.ghost || !obbOverlap(o.x, o.z, o.h, o.hl, o.hw, q)) continue;
+    const dx = o.x - q.x, dz = o.z - q.z, d = Math.hypot(dx, dz) || 1, push = UNSTICK_V * dt;
+    c.pos.x += dx / d * push; c.pos.z += dz / d * push; o.x = c.pos.x; o.z = c.pos.z; return true; }
+  return false;
+}
 function drive(c, dt, veh) {
+  if (unstick(c, dt)) { c.pos.y = K.W.groundHeight?.(c.pos.x, c.pos.z) ?? 0; place(c); return; }
   const p = K.ctx.player.position;
   if (!c.path || c.pi >= c.path.length) { c.speed = damp(c.speed, 0, 3, dt); return; }
   let wp = c.path[c.pi];
