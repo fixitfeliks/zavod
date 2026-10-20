@@ -5,7 +5,7 @@
 // ground follow with ramp launch, circle-vs-AABB collisions. Cameras: first person (driver's seat / on the bike) and a
 // third-person chase cam (V key / CAM button) with wall avoidance. Running people over: ctx.ai.damage for local soldiers,
 // bus 'vehicleHit' {peerId, speed, damage, point} for remote players (net.js turns it into a hit).
-import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState, toggleWindow, windowOpen, swingDoor, qaSmokeActive } from './vehicledamage.js';
+import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState, toggleWindow, windowOpen, swingDoor, qaSmokeActive, hitPane, detach } from './vehicledamage.js';
 import * as THREE from 'three';
 import { buildBike, buildRider, WHEEL_R, WHEELBASE, FRONT_Z, REAR_Z } from './vehicles/bike.js';
 import { buildEbike, buildCyclist } from './vehicles/ebike.js';
@@ -17,6 +17,7 @@ import { carGeometries, carMaterials, carSpec, carEye, carInterior, wheelGeometr
 import { hasCarModel, carModel } from './world/carmodels.js';
 import { buildBus, BUS } from './vehicles/bus.js';
 import { BRI } from './world/coney/brighton.js';
+import { kit as hangkitKit } from './world/hangkit.js';
 
 const DEG = Math.PI / 180;
 const LOOK_PITCH = 35 * DEG, LEAN_MAX = 12 * DEG;
@@ -957,6 +958,8 @@ export async function init(ctx) {
     hit: (other, impulse) => aiHit(other, impulse),
     /** qa: damage of a car (or the one you drive), make a parked car live */
     qaDamage: (b) => damageState(b || S.mounted), qaPromote: (c) => promote(c), qaSmokeActive: () => qaSmokeActive(),
+    /** qa: force a pane/panel state directly (friend-car-test: deterministic damage sync, no aiming) */
+    qaHitPane: (name, n = 1, b = S.mounted) => hitPane(C, b, name, n), qaDetachPanel: (name, b = S.mounted) => detach(C, b, name),
     /** windows: the driver's own side pane by default; name picks any pane (qa, or a future passenger seat) */
     driverPane: (b) => driverPane(b || S.mounted), driverDoor: (b) => driverDoor(b || S.mounted),
     qaWindow(name, b = S.mounted) { return toggleWindow(b, name || driverPane(b)); },
@@ -1038,8 +1041,12 @@ function cabinLod(ctx) { const cam = ctx.camera?.position; if (!cam) return; for
 export function update(dt, ctx) {
   for (const b of S.bikes) if (b.sliding && b !== S.mounted && dt > 0) slide(b, Math.min(dt, 0.05));
   try { updateDamage(ctx, S.bikes, dt); } catch (e) { if (!S.dmgErr) { S.dmgErr = 1; console.error('[vehicles] damage', e); } }
-  hazeOverlay(S.mounted?.spec?.car ? (S.mounted.haze || 0) : 0);
   const p = ctx.player; if (!p) return;
+  // riding along in a friend's car (hangkit.js: not driving ourselves, not the Uber which has its own haze path): the
+  // driver owns the real car and reports its haze on the wire (net.js vi.s) - we just paint the same overlay they'd see
+  let haze = S.mounted?.spec?.car ? (S.mounted.haze || 0) : 0;
+  if (!haze && p.mounted?.passenger && !p.mounted.uber) { const V = hangkitKit(), q = V?.passenger && ctx.net?.peer?.(V.passenger.id); if (q?.veh?.s) haze = q.veh.s; }
+  hazeOverlay(haze);
   const input = ctx.input;
   cabinLod(ctx);
   S.grid.sync(ctx.colliders);

@@ -95,6 +95,8 @@ const api = {
   toast: (t, ms) => V?.ctx.hud?.toast?.(t, ms),
   puff: (at) => puff(at), useItem: (want) => useItem(want), shafts: () => V?.shafts || [], itemModel: (kind) => itemModel(kind), drop: (item) => { if (!V) return false; const i = V.inv.lastIndexOf(item); if (i < 0) return false; V.inv.splice(i, 1); renderCash(); return true; }, left: (item) => V?.left?.[item] || 0, callElevator: (i, k, dir, s) => callElevator(i, k, dir, s), steal: (c) => steal(c), stealLocal: (i, mine) => stealLocal(i, mine),
   nearestParked: (r) => nearestParked(r), endRide: (f) => endRide(f), leavePassenger: () => leavePassenger(), pickRespawn: () => pickRespawn(),
+  /** weapons.js's window-gated drive-by shooting: which door pane a friend-car passenger (not an Uber) is sat next to */
+  passengerPane: () => passengerPane(),
   openDialog: (name, node) => openDialog(name, node), closeDialog: () => closeDialog(), choose: (i) => choose(i), dropCash: (at, n) => dropCash(at, n),
   /** QA: where the interaction points are */
   points: () => V && { shafts: V.shafts.map((t) => ({ kind: t.kind, label: t.label, lobby: t.lobby.cars.map((c) => c.pos.toArray()), top: t.tops[0].cars.map((c) => c.pos.toArray()) })), vendors: V.vendors.map((v) => ({ name: v.name, pos: v.pos.toArray() })), cars: (V.world.parkedCars || []).filter((c) => !c.gone).length, start: V.world.W?.onlineStart },
@@ -110,7 +112,9 @@ export const kitQA = { item: (it) => api.give(it), state: () => ({ ...api.state(
 function bindOnce(ctx) {
   ctx.bus.on('net:elev', (m) => V && onRemoteElev(m));
   ctx.bus.on('net:steal', (m) => V && stealLocal(m.i, false));
-  ctx.bus.on('net:smoke', (m) => { if (!V || !Array.isArray(m.p)) return; const at = new THREE.Vector3(...m.p); puff(at); const me = V.ctx.player; if (m.k !== 'cig' && me && !me.dead && (sameCar(m) || at.distanceTo(me.position) < SHARE_R + 1)) { V.high = Math.min(1, V.high + 0.18); V.highT = Math.max(V.highT, 150); } });
+  ctx.bus.on('net:smoke', (m) => { if (!V || !Array.isArray(m.p)) return; const at = new THREE.Vector3(...m.p); puff(at); const me = V.ctx.player; if (m.k !== 'cig' && me && !me.dead && (sameCar(m) || at.distanceTo(me.position) < SHARE_R + 1)) { V.high = Math.min(1, V.high + 0.18); V.highT = Math.max(V.highT, 150); }
+    // a passenger smoking in OUR car: we own the real haze (#188's driver authority) - growHaze is a no-op if any window's down
+    const car = V.ctx.vehicles?.mounted; if (m.c === V.ctx.net?.id && car?.spec?.car) growHaze(car, m.k === 'cig' ? 0.1 : 0.2); });
   ctx.bus.on('net:drink', (m) => { if (!V || !Array.isArray(m.p)) return; const me = V.ctx.player; if (!me || me.dead || (!sameCar(m) && new THREE.Vector3(...m.p).distanceTo(me.position) >= SHARE_R + 1)) return;
     const it = ITEMS[m.k] || ITEMS.bottle; drink(false, it); V.ctx.hud?.toast?.(`${V.ctx.net?.peer?.(m.f)?.name || 'A friend'} passed you the ${m.k === 'forty' ? '40' : ITEMS[m.k]?.glass ? ITEMS[m.k].name.split(' (')[0] : 'bottle'}`, 1800); });
   ctx.bus.on('net:buy', (m) => V && V.ctx.hud?.toast?.(`${V.ctx.net?.peer?.(m.f)?.name || 'Someone'} bought ${ITEMS[m.k]?.name ? 'a ' + ITEMS[m.k].name : 'something'} from ${String(m.v || 'the man').slice(0, 16)}`, 1800));
@@ -630,18 +634,26 @@ function nearestFriendCar(r) {
   for (const id of net.list()) { const q = net.peer(id); if (!q?.veh || q.veh.k === 'pass') continue; const d = Math.hypot(q.pos.x - p.x, q.pos.z - p.z); if (d < bd) { bd = d; best = q; } }
   return best;
 }
-function enterPassenger(id) { V.passenger = { id }; V.ctx.player.mounted = { passenger: true }; V.ctx.hud?.toast?.('F — GET OUT', 1600); }
+function enterPassenger(id) { V.passenger = { id }; V.ctx.player.mounted = { passenger: true }; V.ctx.hud?.toast?.('F — GET OUT · O — WINDOW', 1600); }
 function leavePassenger() {
   if (!V?.passenger) return; const { ctx } = V; const q = ctx.net?.peer?.(V.passenger.id); V.passenger = null;
   const p = ctx.player; p.mounted = null;
   if (q) { const h = q.heading; const right = new THREE.Vector3(Math.cos(h), 0, -Math.sin(h)); p.teleport(q.pos.x + right.x * 2.2, q.pos.y, q.pos.z + right.z * 2.2, p.yaw, 0); }
 }
+const SEATS = [[0.4, 0.15], [-0.4, -0.85], [0.4, -0.85]];   // front passenger, rear left, rear right (metres right, forward)
+const SEAT_PANES = ['glassFR', 'glassRL', 'glassRR'];   // the door window nearest each seat (the driver always owns glassF + driverSide)
+/** which of the 3 passenger seats you'd take in any car: stable per player, so two friends riding together don't pick the same one */
+function seatIndex(myId) { return [...(myId || 'x')].reduce((a, c) => a + c.charCodeAt(0), 0) % 3; }
+/** the passenger's own door pane name, or null if you're not riding (or riding pillion on a bike, which has no window) */
+function passengerPane() { if (!V?.passenger) return null; const q = V.ctx.net?.peer?.(V.passenger.id); if (q?.veh?.k === 'bike') return null; return SEAT_PANES[seatIndex(V.ctx.net?.id)]; }
 function updatePassenger() {
   const { ctx } = V; const q = ctx.net?.peer?.(V.passenger.id); const p = ctx.player;
   if (!q || !q.veh || q.dead || ctx.input?.pressed?.has?.('KeyF')) { ctx.input?.pressed?.delete?.('KeyF'); return leavePassenger(); }
   const h = q.heading; const fwd = new THREE.Vector3(-Math.sin(h), 0, -Math.cos(h)), right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-  const bike = q.veh.k === 'bike', sid = [...(ctx.net?.id || 'x')].reduce((a, c) => a + c.charCodeAt(0), 0) % 3;
-  const SEATS = [[0.4, 0.15], [-0.4, -0.85], [0.4, -0.85]];   // front passenger, rear left, rear right (metres right, forward)
+  const bike = q.veh.k === 'bike', sid = seatIndex(ctx.net?.id);
+  // O: ask the driver to roll YOUR window (net.js 'carwin') - only they can touch their own car's real panes; the result
+  // comes back to us (and everyone else) through the normal vi.w on the driver's next state tick
+  if (!bike && ctx.input?.pressed?.has?.('KeyO')) { ctx.input.pressed.delete('KeyO'); ctx.net?.send?.('carwin', { to: V.passenger.id, n: SEAT_PANES[sid] }); }
   const [sr, sf] = bike ? [0, -0.55] : SEATS[sid];
   const seat = q.pos.clone().addScaledVector(right, sr).addScaledVector(fwd, sf);
   p.position.set(seat.x, seat.y + (bike ? 0.55 : 0.3), seat.z); p.velocity?.set?.(0, 0, 0);

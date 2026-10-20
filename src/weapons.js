@@ -8,7 +8,8 @@ import { buildShotgun, SHOTGUN_SPEC } from './weapons/shotgun.js';
 import { buildScope } from './weapons/scope.js';
 import { FX } from './weapons/fx.js';
 import { Grenades } from './weapons/grenade.js';
-import { windowOpen } from './vehicledamage.js';
+import { windowOpen, windowBitOpen } from './vehicledamage.js';
+import { kit as hangkitKit, hangkit } from './world/hangkit.js';
 
 // melee keyframes [time s, [dx, dy, dz, rotX, rotY, rotZ]] added on top of the sway node (knife held edge-down, tip forward)
 const SWINGS = [
@@ -534,7 +535,12 @@ function carWindowGate(ctx, p) {
   const m = p?.mounted; if (!m) return true;
   let heading, open;
   if (m.spec?.car) { const side = m.spec.eyeSide < 0 ? 'L' : 'R'; heading = m.heading; open = windowOpen(m, 'glassF' + side); }   // driving: p.mounted is the car itself
-  else if (m.passenger) { const win = ctx.uber?.windowState?.(); if (!win) return true; heading = win.heading; open = win.open; }   // Uber: gated; a friend's car has no local mesh to check yet, so it stays ungated
+  else if (m.passenger && m.uber) { const win = ctx.uber?.windowState?.(); if (!win) return true; heading = win.heading; open = win.open; }
+  else if (m.passenger) {   // a friend's car: no local pane of our own, gate off what the driver reports (net.js vi.w)
+    const id = hangkitKit()?.passenger?.id, q = id && ctx.net?.peer?.(id), pane = hangkit.passengerPane();
+    if (!q?.veh || !pane) return true;   // no data yet, or riding pillion on a bike (no window to gate): ungated
+    heading = q.heading; open = windowBitOpen(q.veh.w, pane);
+  }
   else return true;
   if (!open) return false;
   return Math.abs(Math.cos(p.yaw - heading)) < WIN_YAW_COS_MAX && Math.abs(p.pitch) < WIN_PITCH_MAX;

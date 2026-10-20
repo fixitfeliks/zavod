@@ -52,6 +52,7 @@ import { hasCarModel, carModel } from './world/carmodels.js';
 import { buildBike } from './vehicles/bike.js';
 import { buildJetski } from './vehicles/jetski.js';
 import { buildBus } from './vehicles/bus.js';
+import { toggleWindow, windowBits, syncWindowBits, setRemoteHaze, damageBits, applyDamageBits } from './vehicledamage.js';
 import * as UI from './netui.js';
 
 const ALL_BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt', 'wss://test.mosquitto.org:8081'];
@@ -62,6 +63,7 @@ const SEND_HZ = 15, HEARTBEAT_MS = 480, TIMEOUT = 10000, BYE_GRACE = 1500, RESPA
 const MAX_MSG = 4096, TELEPORT = 15, EXTRAP_MS = 150, DELAY_MIN = 90, DELAY_MAX = 400, WATCHDOG = 6000;
 const F_DEAD = 1, F_CROUCH = 2, F_ADS = 4, F_AFK = 8;
 const ID_RE = /^[a-z0-9]{8}$/;
+const DOOR_PANES = new Set(['glassFL', 'glassFR', 'glassRL', 'glassRR']);
 let S = null;
 
 const rid = () => Math.random().toString(36).slice(2, 10).padEnd(8, '0');
@@ -130,8 +132,9 @@ function api() {
     get peers() { return S.peers.size; }, get connected() { return anyUp(); }, get room() { return S.room; }, get name() { return S.name; }, get id() { return S.id; },
     hit: (peer, dmg, hs) => { const p = S.peers.get(peer); if (!p || p.dead || p.afk) return; send({ t: 'hit', to: peer, dmg: Math.max(0, Math.min(250, dmg | 0)), hs: !!hs }); },
     scores: () => [...S.score.entries()].filter(([, v]) => !v.gone).map(([k, v]) => ({ id: k, name: S.disp.get(k) || v.name, k: v.k, d: v.d })),
-    send: (t, data = {}) => { const m = { ...data, t }; if (t === 'steal' && int(m.i, 0, 100000) !== null) S.stolen.add(m.i); send(m, ['steal', 'elev', 'red', 'igor', 'goto', 'cash', 'loot', 'thughit', 'rdoor', 'fresh', 'wv', 'wvhit', 'wvshot', 'gunoffer', 'gunpaid', 'shroompaid', 'dk', 'folk', 'juke', 'dt', 'uber'].includes(t) && t !== 'wv'); },   // loop events are re-sent once (receivers dedupe by seq)
+    send: (t, data = {}) => { const m = { ...data, t }; if (t === 'steal' && int(m.i, 0, 100000) !== null) S.stolen.add(m.i); send(m, ['steal', 'elev', 'red', 'igor', 'goto', 'cash', 'loot', 'thughit', 'rdoor', 'fresh', 'wv', 'wvhit', 'wvshot', 'gunoffer', 'gunpaid', 'shroompaid', 'dk', 'folk', 'juke', 'dt', 'uber', 'carwin'].includes(t) && t !== 'wv'); },   // loop events are re-sent once (receivers dedupe by seq)
     qaPeers: () => [...S.peers.values()].map((p) => ({ veh: p.veh?.k || null, riderVisible: !!p.inst.group.visible, y: +p.inst.group.position.y.toFixed(2) })),
+    qaVehObj: (id) => S.peers.get(id)?.vehObj || null,   // the mesh net.js built for a peer's car (vehicledamage.js qaDamage/qaWindowOpen can read it directly)
     peer: (id) => { const p = S.peers.get(id); return p ? { id, name: S.disp.get(id) || p.name, pos: p.vehObj ? p.vehObj.position : p.inst.group.position, heading: p.heading || 0, veh: p.veh || null, dead: p.dead, afk: p.afk, seen: p.seen } : null; },
     list: () => [...S.peers.keys()],
     stolen: () => [...S.stolen].sort((a, b) => a - b),
@@ -345,7 +348,14 @@ function onState(pid, m, now) {
   let v = null;
   if (m.v && typeof m.v === 'object' && m.v.k !== 'pass') {
     const k = String(m.v.k || ''); const vp = vec([m.v.x, m.v.y, m.v.z]); const h = num(m.v.h, 1000);
-    if (vp && !Number.isNaN(h) && (k === 'bike' || k === 'jetski' || CAR_KINDS.includes(k))) v = { k, c: int(m.v.c, 0, 0xffffff) ?? 0x22305c, h, x: vp[0], y: vp[1], z: vp[2] };
+    if (vp && !Number.isNaN(h) && (k === 'bike' || k === 'jetski' || CAR_KINDS.includes(k))) {
+      v = { k, c: int(m.v.c, 0, 0xffffff) ?? 0x22305c, h, x: vp[0], y: vp[1], z: vp[2] };
+      // only a car reports these (window bits / haze / damage bits); a bike/jetski's v has none, same as the sender
+      const haze = num(m.v.s, 1), win = int(m.v.w, 0, 15), dmg = int(m.v.d, 0, 0xfffffff);
+      if (!Number.isNaN(haze)) v.s = Math.max(0, haze);
+      if (win !== null) v.w = win;
+      if (dmg !== null) v.d = dmg;
+    }
   }
   p = p || peerFor(pid, cleanName(m.n)); if (!p) return;
   if (z !== p.z) { p.z = z; p.lastQ = -1; p.off = null; p.lastTs = null; }   // they reloaded (same id, new instance): reset sequence + clock
@@ -416,6 +426,12 @@ function onEvent(m) {
       ctx.bus.emit('net:elev', { t: 'elev', f, i, k, s, d: m.d, p }); return;
     }
     case 'smoke': { if (document.hidden) return; const p = vec(m.p); if (p) ctx.bus.emit('net:smoke', { t: 'smoke', f, p, c: ID_RE.test(m.c) ? m.c : null, k: m.k === 'cig' ? 'cig' : undefined }); return; }   // c: the car it was smoked in (everyone in it shares)
+    case 'carwin': {   // a passenger rolling their own window (hangkit.js): only the driver can act on it, on their real car -
+      // the result reaches everyone (including the passenger) back through the normal vi.w on the next state tick
+      if (m.to !== S.id || !DOOR_PANES.has(m.n)) return;
+      const mv = ctx.vehicles?.mounted; if (mv?.spec?.car) toggleWindow(mv, m.n);
+      return;
+    }
   }
   ctx.bus.emit('net:' + m.t, m);   // other game-mode events (coney hangout: igor …)
 }
@@ -472,7 +488,11 @@ function sendState(now, force = false) {
   S.lastSend = now; const p = me.position;
   const flags = (me.dead ? F_DEAD : 0) | (me.crouching ? F_CROUCH : 0) | (me.ads ? F_ADS : 0) | (isAfk() ? F_AFK : 0);
   let vi = null;
-  try { const mv = ctx.vehicles?.mounted; vi = mv ? { k: mv.spec?.car ? (mv.kind || 'sedan') : mv.spec?.water ? 'jetski' : 'bike', c: mv.color ?? 0, h: +mv.heading.toFixed(3), x: +mv.pos.x.toFixed(2), y: +mv.pos.y.toFixed(2), z: +mv.pos.z.toFixed(2), ...(mv.haze > 0.01 ? { s: +mv.haze.toFixed(2) } : {}) } : (me.mounted?.passenger ? { k: 'pass' } : null); } catch {}
+  // driving a car: w = which door windows are open (bitmask, DOOR_GLASS order) so a passenger's own roll and a bystander's
+  // view match the real thing; d = compact panel/pane damage state (#4) - both just a couple more ints on the same payload,
+  // like haze (s) already was. Bikes/jetski have no doors to report, so those fields are left off for them.
+  try { const mv = ctx.vehicles?.mounted, isCar = !!mv?.spec?.car;
+    vi = mv ? { k: isCar ? (mv.kind || 'sedan') : mv.spec?.water ? 'jetski' : 'bike', c: mv.color ?? 0, h: +mv.heading.toFixed(3), x: +mv.pos.x.toFixed(2), y: +mv.pos.y.toFixed(2), z: +mv.pos.z.toFixed(2), s: isCar ? +(mv.haze || 0).toFixed(2) : undefined, w: isCar ? windowBits(mv) : undefined, d: isCar ? damageBits(mv) : undefined } : (me.mounted?.passenger ? { k: 'pass' } : null); } catch {}
   const sc = S.score.get(S.id); let tr = null; try { tr = me.mounted?.train ? ctx.subway?.local?.() || null : null; } catch {}   // riding the F: car + spot in the car
   pub(S.base + 's/' + S.id, { n: S.name, q: ++S.sseq, z: S.inst, ts: Math.round(now), p: [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2), +(me.yaw || 0).toFixed(3), +(me.speed || 0).toFixed(1), flags], v: vi, tr, fe: ctx.ferry?.local?.() || undefined, ub: ctx.uber?.local?.() || undefined, sc: [sc.k, sc.d], w: String(ctx.weapons?.currentId || '').slice(0, 12) || undefined });   // w: what you're holding (friends draw it)
 }
@@ -530,13 +550,20 @@ function renderPeer(p, now, rdt, ctx) {
   p.inst.mixer?.update(rdt);
   // driving: show their vehicle instead of the soldier (same interpolated pose; heading on the shortest arc)
   const vk = cur.v ? cur.v.k + ':' + cur.v.c : null;
+  p.veh = cur.v || null;   // always current (window/haze/damage bits move every tick, not just on a kind/colour change)
   if (vk !== p.vehKey) {
     if (p.vehObj) { ctx.scene.remove(p.vehObj); p.vehObj = null; }
-    p.vehKey = vk; p.veh = cur.v ? { ...cur.v } : null;
+    p.vehKey = vk;
     if (cur.v) { try { p.vehObj = remoteVehicle(ctx, cur.v); ctx.scene.add(p.vehObj); } catch (e) { console.warn('[net] remote vehicle', e?.message); p.vehObj = null; } }
   }
   if (p.vehObj) {   // snapshots already carry the vehicle's pose (x/y/z/yaw = vehicle) while driving
     p.vehObj.position.set(x, y, z); p.vehObj.rotation.set(0, yaw, 0);
+    if (p.vehObj.panes) {   // car (not a bike/jetski): mirror the driver's window roll, cabin haze and damage - no local
+      // authority over any of it, just painting what the driver reported (#185/#188/#4 for a friend's car)
+      syncWindowBits(p.vehObj, cur.v?.w || 0, rdt);
+      setRemoteHaze(p.vehObj, cur.v?.s || 0);
+      if (cur.v?.d != null) applyDamageBits(ctx, p.vehObj, cur.v.d);
+    }
     const ski = cur.v?.k === 'jetski', O = ski ? ctx.world?.ocean : null;
     if (O) {   // jet ski: pitch / roll with the swell under it (the sea is on the wall clock, so it matches what they see)
       const fx = -Math.sin(yaw), fz = -Math.cos(yaw), wh = (a, b) => O.waveHeight(x + a, z + b);
@@ -578,15 +605,37 @@ const _carGeo = new Map();
 const _seat = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 /** a passenger rides in someone's car: their snapshots put them in the seat, so sit them down if a car is right there */
 function nearCar(pos) { const m = S.ctx.vehicles?.mounted; if (m?.spec?.car && m.pos.distanceTo(pos) < 1.6) return true; for (const q of S.peers.values()) if (q.vehObj && q.veh?.k !== 'bike' && q.veh?.k !== 'jetski' && q.vehObj.position.distanceTo(pos) < 1.6) return true; return false; }
+function kitFor(kind) {   // same split (panels: true) a driven car gets - cached once per kind, shared read-only geometry
+  let kitG = _carGeo.get(kind); if (!kitG) { kitG = carGeometries(kind, { panels: true }); _carGeo.set(kind, kitG); } return kitG;
+}
+/** a friend's car, built with the same panel/pane split vehicles.js's makeCar gives the driven car (#185/#188/#183): so a
+ *  passenger can roll their own window and everyone sees the same damage, on the one mesh every client (driver, passenger,
+ *  bystander) renders for that peer. Door/pane state is mirrored from the wire (net.js renderPeer), never simulated here -
+ *  this just builds the shapes to mirror onto. */
 function remoteVehicle(ctx, v) {
   const grp = new THREE.Group();
   if (v.k === 'bike') { try { const b = buildBike(ctx); grp.add(b.group); } catch {} return grp; }
   if (v.k === 'jetski') { try { const b = buildJetski(ctx, v.c || null); grp.add(b.group); } catch {} return grp; }
   if (v.k === 'bus') { try { const B = buildBus({ sign: 'NOT IN SERVICE', lite: !!ctx.lite }); B.group.rotation.y = Math.PI / 2; grp.add(B.group); } catch {} return grp; }
   if (hasCarModel(v.k)) { const m = carModel(v.k, v.c || 0xb01010); if (m) { m.rotation.y = Math.PI / 2; grp.add(m); return grp; } }
-  const G = _carGeo.get(v.k) || (_carGeo.set(v.k, carGeometries(v.k).geos), _carGeo.get(v.k)); const CM = carMaterials();
+  const kit = new THREE.Group(); kit.rotation.y = Math.PI / 2; grp.add(kit);
+  const kitG = kitFor(v.k), G = kitG.geos, CM = carMaterials();
   const paint = CM.paint.clone(); paint.color = new THREE.Color(v.c || 0x22305c);
-  for (const [slot, g] of Object.entries(G)) { if (!g) continue; const m = new THREE.Mesh(g, slot === 'paint' ? paint : slot === 'glass' ? (CM.glassSee || CM.glass) : CM[slot]); m.rotation.y = Math.PI / 2; m.castShadow = slot === 'paint'; grp.add(m); }
+  const glass = (CM.glassSee || CM.glass).clone(), mat = { paint, glass };   // cloned per car: the hotbox haze tints one friend's glass without fogging every other car of that kind
+  const meshes = [];
+  for (const [slot, g] of Object.entries(G)) { if (!g) continue; const m = new THREE.Mesh(g, mat[slot] || CM[slot]); m.castShadow = slot === 'paint'; kit.add(m); meshes.push(m); }
+  const panels = {}, panes = {};
+  for (const [n, g] of Object.entries(kitG.panels || {})) {
+    const isGlass = n.startsWith('glass'); g.computeBoundingBox(); const bb = g.boundingBox, ctr = bb.getCenter(new THREE.Vector3());
+    const hinge = n.startsWith('door') ? new THREE.Vector3(bb.max.x, ctr.y, ctr.z) : n === 'hood' ? new THREE.Vector3(bb.min.x, bb.max.y, 0) : n === 'trunk' ? new THREE.Vector3(bb.max.x, bb.max.y, 0) : ctr.clone();
+    const doorOf = isGlass && /^glass[FR][LR]$/.test(n) ? 'door' + n.slice(5) : null, host = doorOf && panels[doorOf] ? panels[doorOf].pivot : null;
+    let pivot = host; if (!pivot) { pivot = new THREE.Group(); pivot.position.copy(hinge); pivot.userData.home = hinge.clone(); kit.add(pivot); }
+    const m = new THREE.Mesh(g, isGlass ? glass : paint); m.position.copy(pivot.userData.home).negate(); pivot.add(m); meshes.push(m);
+    if (isGlass) { panes[n] = { mesh: m, ctr, state: 0 }; if (doorOf && panels[doorOf]) (panels[doorOf].glass ||= []).push(n); }
+    else panels[n] = { mesh: m, shell: null, pivot, ctr, state: 0 };
+  }
   try { const cab = carInterior(v.k, G); cab.group.rotation.y = Math.PI / 2; grp.add(cab.group); } catch {}
+  grp.kit = kit; grp.mat = mat; grp.panels = panels; grp.panes = panes; grp.meshes = meshes; grp.spec = { car: true }; grp.vel = new THREE.Vector3();
+  Object.defineProperty(grp, 'pos', { get: () => grp.position });   // vehicledamage.js (detach/hitPane) reads car.pos / car.vel
   return grp;
 }

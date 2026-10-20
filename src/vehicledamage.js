@@ -17,6 +17,7 @@ const BIKE_HP = 900;   // a motorcycle/e-bike's own hp (cars use HP above): high
 // smoke/fire/lights fire at the same fractions of whichever max applies
 const SMOKE_FRAC = SMOKE_AT / HP, FIRE_FRAC = FIRE_AT / HP, LIGHTS_FRAC = LIGHTS_AT / HP;
 const WIN_T = 0.3, WIN_DROP = 0.42;   // window roll: seconds to fully travel, metres it slides down into the door
+const DOOR_GLASS = ['glassFL', 'glassFR', 'glassRL', 'glassRR'];   // bit order for net.js's window bitmask (vi.w / windowBits)
 const DOOR_SWING = 0.5, DOOR_OPEN_T = 0.22, DOOR_HOLD_T = 0.35, DOOR_CLOSE_T = 0.45;   // a short hinge pulse on entry / exit
 const PANEL_HP = 260, HANG_AT = 0.45, BULLET_PANEL = 14, BULLET_HP = 12, PANE_CRACK = 1, PANE_SHATTER = 3, CRASH_PANE = 90;   // panel health, the fraction left when it hangs; a bullet's share; hits to crack / shatter a pane; crash damage that breaks glass near it
 const HOLES = 24, HOLES_LITE = 8, MAX_DEBRIS = 6, MAX_DEBRIS_LITE = 2, DEBRIS_T = 20, SHARDS = 120, SHARDS_PER = 14, PANEL_R = 1.25;   // decal / debris / shard caps; debris lifetime (s); crash reach to a panel's centre (m)
@@ -70,7 +71,7 @@ function spawnShards(C, at, vel, n = SHARDS_PER) {
     SHARD_LIST.push({ p: at.clone().add(_v.set((Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.5)), v: new THREE.Vector3((Math.random() - 0.5) * 3, 1 + Math.random() * 2, (Math.random() - 0.5) * 3).addScaledVector(vel || _v.set(0, 0, 0), 0.5), r: new THREE.Euler(Math.random() * 6, Math.random() * 6, 0), t: 0 }); }
 }
 /** a pane: cracked (hits >= PANE_CRACK), then shattered (>= PANE_SHATTER: hidden, shards fall, the window is open) */
-function hitPane(C, b, name, n = 1) {
+export function hitPane(C, b, name, n = 1) {
   const P = b.panes?.[name]; if (!P || P.state === 2) return; P.hits = (P.hits || 0) + n;
   if (P.hits >= PANE_SHATTER) { P.state = 2; P.mesh.visible = false; P.mesh.geometry.computeBoundingBox(); const ctr = P.mesh.geometry.boundingBox.getCenter(new THREE.Vector3()).applyMatrix4(P.mesh.matrixWorld);
     spawnShards(C, ctr, b.vel); try { C.audio?.play?.('glass', { position: ctr, volume: 1 }); } catch {} }
@@ -92,7 +93,7 @@ function hang(P, name) {
   else if (name.startsWith('door')) { P.ajar = 0.32; piv.rotation.y = (name.endsWith('R') ? 1 : -1) * P.ajar; piv.rotation.x = (name.endsWith('R') ? -1 : 1) * 0.04; }   // sprung, sagging on its hinge
   else if (name.startsWith('fender')) { piv.rotation.x = (name.endsWith('R') ? 1 : -1) * 0.06; piv.position.y -= 0.03; }
 }
-function detach(C, b, name) {
+export function detach(C, b, name) {
   const P = b.panels[name]; P.state = 3; const m = P.mesh; m.updateMatrixWorld(true);
   const max = lite(C) ? MAX_DEBRIS_LITE : MAX_DEBRIS; while (DEBRIS.length >= max) dropDebris(DEBRIS[0]);
   m.geometry.computeBoundingBox(); const ctr = m.geometry.boundingBox.getCenter(new THREE.Vector3());
@@ -104,6 +105,30 @@ function detach(C, b, name) {
   try { C.audio?.play?.('impact_metal', { position: holder.position, volume: 1 }); } catch {}
 }
 function dropDebris(d) { d.g.removeFromParent(); DEBRIS.splice(DEBRIS.indexOf(d), 1); }
+
+// ---- damage sync (friends in the same car / watching it see the same wreck) ----------------------------------------------
+const PANEL_NAMES = ['hood', 'trunk', 'fenderL', 'fenderR', 'doorFL', 'doorFR', 'doorRL', 'doorRR'];
+const PANE_NAMES = ['glassW', 'glassB', 'glassFL', 'glassFR', 'glassRL', 'glassRR'];
+/** a car's visible damage as one int (panels/panes 2 bits each: 0 ok, 1 dented/cracked, 2 hanging, 3 cracked→shattered for
+ *  panes), for net.js to put on the wire at a low rate. Detached-panel debris physics stays local - this carries only the
+ *  resulting STATE so a remote mirror shows the same missing panel / broken glass, not the tumbling piece itself. */
+export function damageBits(car) {
+  let bits = 0, shift = 0;
+  for (const n of PANEL_NAMES) { bits |= (car.panels?.[n]?.state || 0) << shift; shift += 2; }
+  for (const n of PANE_NAMES) { bits |= (car.panes?.[n]?.state || 0) << shift; shift += 2; }
+  return bits;
+}
+/** apply a damage snapshot to a remote mirror. Only ever moves a panel/pane forward (never un-detaches / un-shatters -
+ *  the driver's own object is the only thing restore() ever repairs; a mirror just catches up to whatever it's told). */
+export function applyDamageBits(C, car, bits) {
+  if (!car || bits == null) return; let shift = 0;
+  for (const n of PANEL_NAMES) { const state = (bits >> shift) & 3; shift += 2;
+    const P = car.panels?.[n]; if (!P || P.state >= state) continue;
+    if (state >= 3) detach(C, car, n); else if (state >= 2) { P.state = 2; hang(P, n); } else P.state = state; }
+  for (const n of PANE_NAMES) { const state = (bits >> shift) & 3; shift += 2;
+    const P = car.panes?.[n]; if (!P || P.state >= state) continue;
+    if (state >= 2) { P.hits = PANE_SHATTER; hitPane(C, car, n, 0); } else if (state >= 1) { P.hits = PANE_CRACK; hitPane(C, car, n, 0); } }
+}
 
 /** Roll a side window up/down (panes glassFL / glassFR / glassRL / glassRR). A shattered pane (#183) is already open and
  *  can't be rolled either way. Returns the new target (0 up, 1 down) or null if that car has no such window. */
@@ -117,6 +142,20 @@ export function windowOpen(car, name) {
   const P = car?.panes?.[name]; if (!P) return true;   // no split panes (a merged/parked body): nothing to gate
   return P.state === 2 || (P.win || 0) > 0.5;
 }
+/** The 4 door windows as a bitmask (bit i set = that pane is open), for net.js to put on the wire alongside the car's pose. */
+export function windowBits(car) {
+  let bits = 0; for (let i = 0; i < DOOR_GLASS.length; i++) if (windowOpen(car, DOOR_GLASS[i])) bits |= 1 << i; return bits;
+}
+/** Read one named pane's bit back out of windowBits()'s mask - weapons.js's canFire gate for a friend-car passenger, who
+ *  has no local pane object of their own to call windowOpen() on, only the driver's reported bits. */
+export function windowBitOpen(bits, name) { const i = DOOR_GLASS.indexOf(name); return i >= 0 && !!((bits || 0) & (1 << i)); }
+/** Remote mirror (a friend's car, no local authority): point every door pane's target at the driver's reported bitmask
+ *  and ease toward it, same curve as the driven car's own `updateInterop`. Safe to call every frame with the latest bits. */
+export function syncWindowBits(car, bits, dt) {
+  if (!car?.panes) return; for (let i = 0; i < DOOR_GLASS.length; i++) { const P = car.panes[DOOR_GLASS[i]]; if (!P || P.state === 2) continue;
+    if (P.y0 == null) P.y0 = P.mesh.position.y; P.winT = (bits & (1 << i)) ? 1 : 0; }
+  easeWindows(car, dt);
+}
 /** A short hinge pulse on a door panel's pivot when someone gets in or out. A no-op once the door is hanging / off (#183). */
 export function swingDoor(car, name) {
   const P = car?.panels?.[name]; if (!P || !name.startsWith('door') || P.state >= 2) return;
@@ -129,7 +168,6 @@ export function swingDoor(car, name) {
 // radiator smoke already uses, so there's no new particle budget for it. Synced to peers at the normal vehicle-state rate
 // (net.js `vi.s`) since it's just one more float on the same payload.
 const HAZE_DECAY = 0.016, HAZE_VENT = 0.3, HAZE_PUFF_IV = 0.45, HAZE_COLOR = new THREE.Color(0xdcdcd6);
-const DOOR_GLASS = ['glassFL', 'glassFR', 'glassRL', 'glassRR'];
 /** every door window rolled up (none down, none shattered)? A car with no split door panes yet (still merged/parked) has
  *  nothing to roll down, so it counts as sealed. */
 export function cabinSealed(car) {
@@ -138,6 +176,14 @@ export function cabinSealed(car) {
 }
 /** hangkit.js calls this on every puff while the smoker is in a car: no-op unless the cabin is sealed right now. */
 export function growHaze(car, amt) { if (car?.spec?.car && cabinSealed(car)) car.haze = Math.min(1, (car.haze || 0) + amt); }
+/** Remote mirror of a friend's car: the driver already owns decay/vent/puff (updateHaze above), so this just paints the
+ *  reported haze value onto the one visual every other client shares (net.js's p.vehObj) - the milky glass a passenger or
+ *  bystander sees. No local decay: the driver's next report is what moves it, including back down to 0. */
+export function setRemoteHaze(car, haze) {
+  if (!car) return; car.haze = haze; const g = car.mat?.glass; if (!g) return;
+  if (g.userData.haze0 == null) { g.userData.haze0 = g.color.clone(); g.userData.hazeOp0 = g.opacity; g.userData.hazeR0 = g.roughness; }
+  g.color.copy(g.userData.haze0).lerp(HAZE_COLOR, haze * 0.85); g.opacity = Math.min(0.96, g.userData.hazeOp0 + haze * 0.26); g.roughness = g.userData.hazeR0 + haze * 0.35;
+}
 /** per frame: decay + vent the cabin haze, billow it out of whichever window is open, and tint that car's own glass (cloned
  *  per car in vehicles.js's makeCar - never the shared kit material) milky from the outside as it builds. */
 function updateHaze(C, bikes, dt) {
@@ -158,17 +204,22 @@ function updateHaze(C, bikes, dt) {
   }
 }
 
+/** one car's door panes eased toward whatever `winT` each is set to (toggleWindow for the driven car, syncWindowBits for a
+ *  remote mirror) - shared so both paths animate the same way. */
+export function easeWindows(car, dt) {
+  if (!car?.panes) return; for (const P of Object.values(car.panes)) {
+    if (P.winT == null) continue;
+    if (P.y0 == null) P.y0 = P.mesh.position.y;
+    const cur = P.win || 0, d = P.winT - cur;
+    if (Math.abs(d) > 1e-4) P.win = Math.max(0, Math.min(1, cur + Math.sign(d) * Math.min(Math.abs(d), dt / WIN_T)));
+    P.mesh.position.y = P.y0 - WIN_DROP * (P.win || 0);
+  }
+}
 /** per frame, every car: ease window panes toward their rolled target, and run any door-swing pulse */
 function updateInterop(bikes, dt) {
   for (const b of bikes) {
     if (!b.spec?.car) continue;
-    if (b.panes) for (const P of Object.values(b.panes)) {
-      if (P.winT == null) continue;
-      if (P.y0 == null) P.y0 = P.mesh.position.y;
-      const cur = P.win || 0, d = P.winT - cur;
-      if (Math.abs(d) > 1e-4) P.win = Math.max(0, Math.min(1, cur + Math.sign(d) * Math.min(Math.abs(d), dt / WIN_T)));
-      P.mesh.position.y = P.y0 - WIN_DROP * (P.win || 0);
-    }
+    easeWindows(b, dt);
     if (b.panels) for (const [n, P] of Object.entries(b.panels)) {
       if (P.doorT == null) continue;
       if (P.state >= 2) { P.doorT = null; continue; }   // it came off / is hanging: the crash animation owns the pivot now
