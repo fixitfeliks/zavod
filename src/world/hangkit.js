@@ -5,6 +5,7 @@
 // wsp + sbu hangouts); everything online rides net.js events: elev / steal / smoke / drink / buy.
 import * as THREE from 'three';
 import { hideParkedCar, carEye, dropParkedCarBoxes } from './carkit.js';
+import { growHaze } from '../vehicledamage.js';
 
 const RIDE_T = 4.2, STAIRS_T = 5.2, FADE = 0.45, MAX_INV = 12, SHARE_R = 4;
 // kind: 'smoke' | 'booze' | 'drink' | 'food' | 'loot' | 'misc' (inventory categories); effects: drunk/dur, food (HP), cig (smokes per pack, no high), magic, keep (not for B), melt
@@ -391,6 +392,7 @@ function updateJoint(dt) {
       const h = car.heading; at = car.pos.clone().add(new THREE.Vector3(-Math.cos(h) * 0.95 - Math.sin(h) * 0.2, car.spec?.car ? 1.25 : 1.5, Math.sin(h) * 0.95 - Math.cos(h) * 0.2)); hotbox = !!car.spec?.car;
     }
     puff(at); ctx.net?.send?.('smoke', { p: [+at.x.toFixed(2), +at.y.toFixed(2), +at.z.toFixed(2)], c: carId(), k: V.cig ? 'cig' : undefined });
+    if (hotbox) growHaze(car, V.cig ? 0.1 : 0.2);   // builds the cabin haze (vehicledamage.js) only while every window's up
     if (!V.cig) { const k = V.smokeHi || 0.22; V.high = Math.min(1, V.high + (hotbox ? k * 1.35 : k)); V.highT = Math.max(V.highT, 110 + k * 180); }
   }
   if (V.smokeT <= 0) { if (V.joint) V.joint.g.visible = false; if (ctx.weapons?.viewmodel) ctx.weapons.viewmodel.visible = true; ctx.hud?.toast?.(V.cig ? 'Flick. The butt goes into the sand.' : '…everything is glowing.', 2400); V.cig = false; }

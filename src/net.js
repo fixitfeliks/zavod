@@ -472,7 +472,7 @@ function sendState(now, force = false) {
   S.lastSend = now; const p = me.position;
   const flags = (me.dead ? F_DEAD : 0) | (me.crouching ? F_CROUCH : 0) | (me.ads ? F_ADS : 0) | (isAfk() ? F_AFK : 0);
   let vi = null;
-  try { const mv = ctx.vehicles?.mounted; vi = mv ? { k: mv.spec?.car ? (mv.kind || 'sedan') : mv.spec?.water ? 'jetski' : 'bike', c: mv.color ?? 0, h: +mv.heading.toFixed(3), x: +mv.pos.x.toFixed(2), y: +mv.pos.y.toFixed(2), z: +mv.pos.z.toFixed(2) } : (me.mounted?.passenger ? { k: 'pass' } : null); } catch {}
+  try { const mv = ctx.vehicles?.mounted; vi = mv ? { k: mv.spec?.car ? (mv.kind || 'sedan') : mv.spec?.water ? 'jetski' : 'bike', c: mv.color ?? 0, h: +mv.heading.toFixed(3), x: +mv.pos.x.toFixed(2), y: +mv.pos.y.toFixed(2), z: +mv.pos.z.toFixed(2), ...(mv.haze > 0.01 ? { s: +mv.haze.toFixed(2) } : {}) } : (me.mounted?.passenger ? { k: 'pass' } : null); } catch {}
   const sc = S.score.get(S.id); let tr = null; try { tr = me.mounted?.train ? ctx.subway?.local?.() || null : null; } catch {}   // riding the F: car + spot in the car
   pub(S.base + 's/' + S.id, { n: S.name, q: ++S.sseq, z: S.inst, ts: Math.round(now), p: [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2), +(me.yaw || 0).toFixed(3), +(me.speed || 0).toFixed(1), flags], v: vi, tr, fe: ctx.ferry?.local?.() || undefined, ub: ctx.uber?.local?.() || undefined, sc: [sc.k, sc.d], w: String(ctx.weapons?.currentId || '').slice(0, 12) || undefined });   // w: what you're holding (friends draw it)
 }

@@ -122,6 +122,42 @@ export function swingDoor(car, name) {
   const P = car?.panels?.[name]; if (!P || !name.startsWith('door') || P.state >= 2) return;
   P.doorT = 0;
 }
+
+// ---- hotbox: cabin smoke (a playtester's idea) -----------------------------------------------------------------------------
+// car.haze 0..1: builds while someone smokes with every door window rolled up (cabinSealed), decays slowly on its own, and
+// drains fast through any window that's down - venting a billow of the same pooled smoke sprite (PUFF.white) a crash's
+// radiator smoke already uses, so there's no new particle budget for it. Synced to peers at the normal vehicle-state rate
+// (net.js `vi.s`) since it's just one more float on the same payload.
+const HAZE_DECAY = 0.016, HAZE_VENT = 0.3, HAZE_PUFF_IV = 0.45, HAZE_COLOR = new THREE.Color(0xdcdcd6);
+const DOOR_GLASS = ['glassFL', 'glassFR', 'glassRL', 'glassRR'];
+/** every door window rolled up (none down, none shattered)? A car with no split door panes yet (still merged/parked) has
+ *  nothing to roll down, so it counts as sealed. */
+export function cabinSealed(car) {
+  const P = DOOR_GLASS.map((n) => car?.panes?.[n]).filter(Boolean); if (!P.length) return true;
+  return P.every((p) => p.state !== 2 && (p.win || 0) < 0.05);
+}
+/** hangkit.js calls this on every puff while the smoker is in a car: no-op unless the cabin is sealed right now. */
+export function growHaze(car, amt) { if (car?.spec?.car && cabinSealed(car)) car.haze = Math.min(1, (car.haze || 0) + amt); }
+/** per frame: decay + vent the cabin haze, billow it out of whichever window is open, and tint that car's own glass (cloned
+ *  per car in vehicles.js's makeCar - never the shared kit material) milky from the outside as it builds. */
+function updateHaze(C, bikes, dt) {
+  for (const b of bikes) {
+    if (!b.spec?.car || !(b.haze > 0)) continue;
+    const sealed = cabinSealed(b), was = b.haze;
+    b.haze = Math.max(0, b.haze - HAZE_DECAY * dt - (sealed ? 0 : HAZE_VENT * dt));
+    const g = b.mat?.glass;
+    if (g) { if (g.userData.haze0 == null) { g.userData.haze0 = g.color.clone(); g.userData.hazeOp0 = g.opacity; g.userData.hazeR0 = g.roughness; }
+      g.color.copy(g.userData.haze0).lerp(HAZE_COLOR, b.haze * 0.85); g.opacity = Math.min(0.96, g.userData.hazeOp0 + b.haze * 0.26); g.roughness = g.userData.hazeR0 + b.haze * 0.35; }
+    if (!sealed && was > 0.02) {
+      b.hazePuffT = (b.hazePuffT || 0) - dt;
+      if (b.hazePuffT <= 0) { b.hazePuffT = HAZE_PUFF_IV;
+        for (const n of DOOR_GLASS) { const P = b.panes?.[n]; if (!P || P.state === 2 || (P.win || 0) < 0.5) continue;
+          puff(C.scene, P.mesh.getWorldPosition(new THREE.Vector3()), 'white'); }
+      }
+    }
+  }
+}
+
 /** per frame, every car: ease window panes toward their rolled target, and run any door-swing pulse */
 function updateInterop(bikes, dt) {
   for (const b of bikes) {
@@ -201,12 +237,13 @@ function lightsOut(bike, front) {
 }
 function charred(bike) {
   if (!CHAR) CHAR = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.95, metalness: 0.2 }); const CM = carMaterials();
-  bike.origMat = new Map(); for (const m of bike.meshes || []) { bike.origMat.set(m, m.material); if (m.material !== CM.glass) m.material = CHAR; }
+  bike.origMat = new Map(); for (const m of bike.meshes || []) { bike.origMat.set(m, m.material); if (m.material !== CM.glass && !m.userData.pane && !m.userData.noDent) m.material = CHAR; }
 }
 
 /** per frame for every hurt car: smoke, fire, the fuse, the wreck coming back; debris, shards and sparks */
 export function updateDamage(C, bikes, dt) {
   updateInterop(bikes, dt);
+  updateHaze(C, bikes, dt);
   const scene = C.scene; let any = false;
   for (const b of bikes) {
     const max0 = b.hp0 ?? HP, smokeAt = max0 * SMOKE_FRAC, fireAt = max0 * FIRE_FRAC;
@@ -236,15 +273,19 @@ export function updateDamage(C, bikes, dt) {
 }
 function restore(b) {
   if (b.origMat) for (const [m, mat] of b.origMat) m.material = mat; b.origMat = null;
-  b.hp = null; b.dmgF = b.dmgR = 0; b.wrecked = false; b.fuse = null; b.smokeT = 0; b.lightsOut = false;
+  b.hp = null; b.dmgF = b.dmgR = 0; b.wrecked = false; b.fuse = null; b.smokeT = 0; b.lightsOut = false; b.haze = 0;
+  const g = b.mat?.glass; if (g?.userData.haze0) { g.color.copy(g.userData.haze0); g.opacity = g.userData.hazeOp0; g.roughness = g.userData.hazeR0; }
   for (const m of b.meshes || []) { if (m.userData.lampMat) { m.material = m.userData.lampMat; m.userData.lampMat = null; } if (m.userData.mat0) { m.material = m.userData.mat0; m.userData.mat0 = null; } if (m.userData.origGeo) { m.geometry.dispose(); m.geometry = m.userData.origGeo; m.userData.origGeo = null; m.userData.dented = false; } }   // as new: lamps, body
   for (const P of Object.values(b.panels || {})) { P.hp = PANEL_HP; P.state = 0; P.dark = false; P.mesh.visible = true; if (P.shell) P.shell.visible = true; if (P.pivot) { P.pivot.rotation.set(0, 0, 0); P.pivot.position.copy(P.pivot.userData.home); } P.ajar = 0; }
   for (const P of Object.values(b.panes || {})) { P.hits = 0; if (P.state === 1) P.mesh.material = P.mat0; P.state = 0; P.mesh.visible = true; }
   if (b.holes) { b.holes.n = 0; b.holes.im.count = 0; }
 }
 export const isWrecked = (b) => !!b?.wrecked;
+/** test hook (qa): how many pooled smoke sprites are live right now (crash smoke + the haze venting out of a window share
+ *  this one pool, so a non-zero count while nothing is on fire is the vent billow). */
+export function qaSmokeActive() { return POOL ? POOL.reduce((n, s) => n + (s.visible ? 1 : 0), 0) : 0; }
 /** test hooks (qa): a car's damage at a glance */
 export function damageState(b) {
   if (!b) return null; const pan = {}, pn = {}; for (const [n, P] of Object.entries(b.panels || {})) pan[n] = P.state; for (const [n, P] of Object.entries(b.panes || {})) pn[n] = P.state === 2 || (P.win || 0) > 0.5 ? 'down' : P.state;
-  return { hp: b.hp ?? HP, panels: pan, panes: pn, holes: b.holes?.im.count || 0, debris: DEBRIS.length, shards: SHARD_LIST.length, lightsOut: !!b.lightsOut };
+  return { hp: b.hp ?? HP, panels: pan, panes: pn, holes: b.holes?.im.count || 0, debris: DEBRIS.length, shards: SHARD_LIST.length, lightsOut: !!b.lightsOut, haze: +(b.haze || 0).toFixed(3) };
 }

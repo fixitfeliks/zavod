@@ -5,16 +5,18 @@
 // ground follow with ramp launch, circle-vs-AABB collisions. Cameras: first person (driver's seat / on the bike) and a
 // third-person chase cam (V key / CAM button) with wall avoidance. Running people over: ctx.ai.damage for local soldiers,
 // bus 'vehicleHit' {peerId, speed, damage, point} for remote players (net.js turns it into a hit).
-import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState, toggleWindow, windowOpen, swingDoor } from './vehicledamage.js';
+import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState, toggleWindow, windowOpen, swingDoor, qaSmokeActive } from './vehicledamage.js';
 import * as THREE from 'three';
 import { buildBike, buildRider, WHEEL_R, WHEELBASE, FRONT_Z, REAR_Z } from './vehicles/bike.js';
 import { buildEbike } from './vehicles/ebike.js';
+import { buildScooter, buildStandingRider } from './vehicles/scooter.js';
 import { buildJetski } from './vehicles/jetski.js';
 import { createWaterFX } from './vehicles/waterfx.js';
 import { BoxGrid, resolveCircle, rectBlocked, segmentHit } from './vehicles/collide.js';
 import { carGeometries, carMaterials, carSpec, carEye, carInterior, wheelGeometry, wheelLayout, caliperGeometry, hideParkedCar, dropParkedCarBoxes, carBoxes, gaugeNeedle } from './world/carkit.js';
 import { hasCarModel, carModel } from './world/carmodels.js';
 import { buildBus, BUS } from './vehicles/bus.js';
+import { BRI } from './world/coney/brighton.js';
 
 const DEG = Math.PI / 180;
 const LOOK_PITCH = 35 * DEG, LEAN_MAX = 12 * DEG;
@@ -44,6 +46,20 @@ const EBIKE_BASE = {
 };
 const EBIKE_CITI_SPEC = { ...EBIKE_BASE, kind: 'ebike_citi' };
 const EBIKE_DELIVERY_SPEC = { ...EBIKE_BASE, kind: 'ebike_delivery', max: 10, accel: 4.3, mass: 150 };
+// kick scooter: slow, twitchy, a standing rider (reach is short - it's barely bigger than the deck). Vespa-like moped: a real
+// seated step-through, quicker than the e-bikes but still well under a motorcycle.
+const SCOOTER_KICK_SPEC = {
+  car: false, kind: 'scooter_kick', max: 6, revMax: 2, accel: 3, brake: 6, hard: 7, hardYaw: 0.55, grip: 11, hardGrip: 4, latG: 0.9, steerLow: 0.6,
+  wheelbase: 0.78, circles: [-0.42, 0.36], bodyR: 0.22, band: 0.3, stepUp: 0.3, h: 0.7, leanK: 0.7,
+  eyeH: 1.1, eyeBack: 0.2, eyeSide: 0, reach: 0.9, hx: 0.3, hz: 0.6, boxH: 0.75, lookYaw: 55 * DEG,
+  chaseD: 3.4, chaseH: 0.26, chaseLook: 1.1, hitMul: 4, hitSlow: 0.85, engineBrake: 0.9, mass: 90,
+};
+const SCOOTER_MOPED_SPEC = {
+  car: false, kind: 'scooter_moped', max: 14, revMax: 3.2, accel: 5.5, brake: 8.5, hard: 10, hardYaw: 0.7, grip: 13, hardGrip: 4.5, latG: 1.05, steerLow: 0.5,
+  wheelbase: 1.22, circles: [-0.62, 0.6], bodyR: 0.34, band: 0.42, stepUp: 0.4, h: 1.0, leanK: 0.95,
+  eyeH: 1.2, eyeBack: 0.26, eyeSide: 0, reach: 1.1, hx: 0.42, hz: 0.92, boxH: 1.0, lookYaw: 60 * DEG,
+  chaseD: 3.9, chaseH: 0.3, chaseLook: 1.25, hitMul: 5, hitSlow: 0.8, engineBrake: 0.85, mass: 115,
+};
 // jet ski: bike-style lean + throttle + Space charge-jump, but floats on the ocean's waveHeight (buoyancy spring), jet-thrust
 // steering (little bite off the throttle), slides like a boat, stalls when the intake runs out of water (beached).
 const JETSKI_SPEC = {
@@ -135,6 +151,19 @@ function makeEbike(x, z, yaw, variant = 'citibike', yRef = 0) {
   S.bikes.push(bike);
   return bike;
 }
+/** A stealable scooter parked at (x, z): a kick scooter or a Vespa-like moped. Rides through the same spec-driven physics
+ *  as a motorcycle / e-bike (mount()/dismount()/stepVeh don't care which non-car spec they're driving). */
+function makeScooter(x, z, yaw, variant = 'kick', yRef = 0) {
+  const parts = buildScooter(C, variant), spec = variant === 'moped' ? SCOOTER_MOPED_SPEC : SCOOTER_KICK_SPEC;
+  const bike = { ...parts, ...baseState(x, z, yaw, yRef), spec, mass: spec.mass, rider: null };
+  bike.group.position.copy(bike.pos); bike.group.rotation.y = yaw;
+  for (const m of bike.meshes) { m.userData.vehicle = bike; C.raycastTargets.push(m); }
+  C.scene.add(bike.group);
+  parkBox(bike);   // not pushed into C.colliders, same as a parked dock e-bike: a scooter on the sidewalk shouldn't block the
+  // map's broader pathing/placement checks - other vehicles can roll through a parked one
+  S.bikes.push(bike);
+  return bike;
+}
 /** A jet ski floating at (x, z) (moored in the shallows / off the pier). */
 function makeJetski(x, z, yaw, i = 0) {
   const parts = buildJetski(C, null, i), O = C.world?.ocean;
@@ -157,13 +186,15 @@ function makeCar(x, z, yaw, kind = 'sedan', color = 0x22305c, yRef = 0, wantPane
   const kit = new THREE.Group(); kit.rotation.y = Math.PI / 2; body.add(kit);     // kit frame (+x front) → vehicle frame (-z front)
   const meshes = []; const paint = CM.paint.clone(); paint.color = new THREE.Color(color);
   const lampR = CM.lampR.clone(), lampW = CM.lampW.clone(); lampR.emissive = new THREE.Color(0xff1a0a); lampR.emissiveIntensity = 0.08; lampW.emissive = new THREE.Color(0xfff0d0); lampW.emissiveIntensity = 0.05;
-  const mat = { paint, lampR, lampW, glass: CM.glassSee || CM.glass };   // see-through: the cabin (and whoever's in it) shows
+  // glass cloned per car (not the shared kit material): the hotbox haze tints one car's own windows milky from the outside
+  // without fogging every other car sharing the same base material
+  const mat = { paint, lampR, lampW, glass: (CM.glassSee || CM.glass).clone() };   // see-through: the cabin (and whoever's in it) shows
   let tyreR = 0.33, cab, wheels = null, busKit = null, panels = null, panes = null, geos = null, bodyMesh = null;
   if (kind === 'bus') { const B = buildBus({ sign: 'NOT IN SERVICE', lite: !!C.lite }); busKit = B; kit.add(B.group); for (const m of B.meshes) if (m.parent !== B.interior) meshes.push(m); cab = { wheel: new THREE.Group() }; }
   else if (hasCarModel(kind)) { const mdl = carModel(kind, color); kit.add(mdl); mdl.traverse((o) => { if (o.isMesh && o.name !== 'aoShadow') meshes.push(o); }); cab = { wheel: new THREE.Group() }; }   // a real model (with its own cabin)
   else { const kitG = carGeometries(kind, { wheels: false, panels: wantPanels }), panelGeos = kitG.panels || {}; geos = kitG.geos;
     bodyMesh = {};
-    for (const [slot, g] of Object.entries(geos)) { if (!g) continue; const m = new THREE.Mesh(g, mat[slot] || CM[slot]); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; kit.add(m); meshes.push(m); if (slot === 'paint' || slot === 'glass') bodyMesh[slot] = m; }
+    for (const [slot, g] of Object.entries(geos)) { if (!g) continue; const m = new THREE.Mesh(g, mat[slot] || CM[slot]); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; if (slot === 'glass') m.userData.noDent = true; kit.add(m); meshes.push(m); if (slot === 'paint' || slot === 'glass') bodyMesh[slot] = m; }
     cab = carInterior(kind, geos); kit.add(cab.group);
     if (wantPanels) {
       // the split body (vehicledamage.js): each panel / pane on a pivot at its hinge, so it can hang, swing ajar or come off
@@ -206,7 +237,7 @@ function ensurePanels(car) {
   for (const slot of ['paint', 'glass']) {
     const old = car.bodyMesh[slot], g = kitG.geos[slot]; if (!old || !g) continue;
     old.removeFromParent(); const mi = car.meshes.indexOf(old); if (mi > -1) car.meshes.splice(mi, 1); const ri = C.raycastTargets.indexOf(old); if (ri > -1) C.raycastTargets.splice(ri, 1);
-    const m = new THREE.Mesh(g, car.mat[slot] || car.mat.paint); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; m.userData.vehicle = car;
+    const m = new THREE.Mesh(g, car.mat[slot] || car.mat.paint); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; m.userData.vehicle = car; if (slot === 'glass') m.userData.noDent = true;
     car.kit.add(m); car.meshes.push(m); car.bodyMesh[slot] = m; C.raycastTargets.push(m);
   }
   const panels = {}, panes = {};
@@ -233,6 +264,13 @@ function nitroBar(f, on) {
   _nb.style.display = S.mounted ? 'block' : 'none'; const i = _nb.firstChild; i.style.width = `${Math.round(f * 100)}%`; i.style.background = on > 0.3 ? '#ffb24a' : '#4fc3ff';
 }
 function fwdOf(h, out) { return out.set(-Math.sin(h), 0, -Math.cos(h)); }
+let _haze = null;
+/** cheap screen-space haze while you're hotboxing: a flat light-grey div over everything (same trick as hangkit.js's high/
+ *  drunk cv.style.filter, but a plain overlay reads better for smoke than a CSS filter would), opacity tracking car.haze. */
+function hazeOverlay(level) {
+  if (!_haze) { _haze = document.createElement('div'); _haze.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:6;background:#dcdcd6;display:none'; document.body.appendChild(_haze); }
+  if (level > 0.015) { _haze.style.display = 'block'; _haze.style.opacity = Math.min(0.85, 0.08 + level).toFixed(3); } else _haze.style.display = 'none';
+}
 
 // ---------- placement ----------
 function spotFree(x, z, yRef = 0, ignoreBox = null) {
@@ -264,7 +302,28 @@ function placeBikes() {
   for (let d = 3; S.bikes.length < 3 && d < 30; d += 1.5) for (let i = 0; i < 16 && S.bikes.length < 3; i++) { const a = i / 16 * Math.PI * 2; const x = s0.x + Math.cos(a) * d, z = s0.z + Math.sin(a) * d; if (spotFree(x, z, s0.y)) makeBike(x, z, a, s0.y || 0); }
   placeExtras();
 }
-function placeExtras() { placeJetskis(); placeEbikes(); }
+function placeExtras() { placeJetskis(); placeEbikes(); placeScooters(); }
+/** A couple of stealable kick scooters and Vespa-like mopeds, dropped on sidewalks / kerbs near the player's spawn (Coney)
+ *  and near Brighton Beach Ave (BRI: the avenue's layout, imported from the map so a sidewalk-side anchor is cheap to pick
+ *  without re-deriving it here) - both kinds show up in both areas, same loose scatter as placeEbikes(). */
+function placeScooters() {
+  const W = C.world; if (W?.mapId !== 'coney') return;
+  const R = C.rng || Math.random;
+  const spawns = (W?.playerSpawns?.length ? W.playerSpawns : [new THREE.Vector3(0, 0, 0)]);
+  const s0 = spawns[Math.floor(R() * spawns.length)];
+  const brX = BRI.X0 + R() * (BRI.X1 - BRI.X0), brZ = BRI.ZC + (R() < 0.5 ? -1 : 1) * (BRI.HALF + BRI.SWK * 0.5);
+  const areas = [
+    { x: s0.x, z: s0.z, y: s0.y || 0, want: [['kick', 2], ['moped', 1]] },
+    { x: brX, z: brZ, y: groundY(brX, brZ), want: [['kick', 1], ['moped', 2]] },
+  ];
+  for (const area of areas) for (const [variant, n] of area.want) for (let i = 0; i < n; i++) {
+    for (let k = 0; k < 16; k++) {
+      const a = R() * Math.PI * 2, d = 3 + R() * 10, x = area.x + Math.cos(a) * d, z = area.z + Math.sin(a) * d;
+      if (!spotFree(x, z, area.y)) continue;
+      makeScooter(x, z, a, variant, area.y); break;
+    }
+  }
+}
 /** A couple of stealable e-bikes dropped near the player's spawn (a Citi Bike-style dock bike, a delivery cargo bike):
  *  cheap decoration + one more vehicle to steal, not tied to any particular map's vehicleSpots. */
 function placeEbikes() {
@@ -801,7 +860,7 @@ function applyChase(v, dt) {
 function setChase(on) {
   S.chase = !!on;
   const v = S.mounted;
-  if (v) { S.chaseYaw = v.heading; S.chaseY = v.pos.y; S.chaseD = v.spec.chaseD; if (S.chase && !v.spec.car && !v.rider) { v.rider = buildRider(); v.body.add(v.rider); if (v.spec.water) v.rider.position.set(0, -0.22, 0.12); } }
+  if (v) { S.chaseYaw = v.heading; S.chaseY = v.pos.y; S.chaseD = v.spec.chaseD; if (S.chase && !v.spec.car && !v.rider) { v.rider = v.spec.kind === 'scooter_kick' ? buildStandingRider() : buildRider(); v.body.add(v.rider); if (v.spec.water) v.rider.position.set(0, -0.22, 0.12); } }
   S.lookYaw = 0; S.lookPitch = 0;
   if (S.ui) S.ui.cam.classList.toggle('on', S.chase);
   return S.chase;
@@ -897,7 +956,7 @@ export async function init(ctx) {
     /** an AI car hit the car you drive (traffic.js etc. resolve the push): other = the AI car, { nx, nz } from it to you, vn the closing speed (< 0) */
     hit: (other, impulse) => aiHit(other, impulse),
     /** qa: damage of a car (or the one you drive), make a parked car live */
-    qaDamage: (b) => damageState(b || S.mounted), qaPromote: (c) => promote(c),
+    qaDamage: (b) => damageState(b || S.mounted), qaPromote: (c) => promote(c), qaSmokeActive: () => qaSmokeActive(),
     /** windows: the driver's own side pane by default; name picks any pane (qa, or a future passenger seat) */
     driverPane: (b) => driverPane(b || S.mounted), driverDoor: (b) => driverDoor(b || S.mounted),
     qaWindow(name, b = S.mounted) { return toggleWindow(b, name || driverPane(b)); },
@@ -906,6 +965,7 @@ export async function init(ctx) {
     spawnCar: (x, z, yaw, kind, color, y, panels) => makeCar(x, z, yaw, kind, color, y ?? ctx.player?.position.y ?? 0, panels ?? true),
     qaSpawn(x, z, yaw = 0, y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeBike(x, z, yaw, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
     qaSpawnEbike(x, z, yaw = 0, variant = 'citibike', y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeEbike(x, z, yaw, variant, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
+    qaSpawnScooter(x, z, yaw = 0, variant = 'kick', y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeScooter(x, z, yaw, variant, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
     qaMount() { const b = nearestBike(); if (!b) return false; return mount(b); },
     /** jet skis: list + stand next to one (from the beach side) */
     get jetskis() { return S.bikes.filter((b) => b.spec.water); },
@@ -978,6 +1038,7 @@ function cabinLod(ctx) { const cam = ctx.camera?.position; if (!cam) return; for
 export function update(dt, ctx) {
   for (const b of S.bikes) if (b.sliding && b !== S.mounted && dt > 0) slide(b, Math.min(dt, 0.05));
   try { updateDamage(ctx, S.bikes, dt); } catch (e) { if (!S.dmgErr) { S.dmgErr = 1; console.error('[vehicles] damage', e); } }
+  hazeOverlay(S.mounted?.spec?.car ? (S.mounted.haze || 0) : 0);
   const p = ctx.player; if (!p) return;
   const input = ctx.input;
   cabinLod(ctx);
