@@ -70,7 +70,8 @@ export function buildCity(world, M, toGPU = () => 0) {
   for (const p of OSM.l) { const q = bbox(p), busy = w8.has(p); if (!busy && !(q.x1 > PLAY.x0 && q.x0 < PLAY.x1 && q.z1 > PLAY.z0 && q.z0 < PLAY.z1)) continue;
     // a lot polygon can run under a building OSM maps separately (or one housing.js / school.js builds): no car inside its walls
     const walls = ctx.colliders.filter((b) => b.max.y - b.min.y > 1.4 && b.min.y < 1 && b.max.x > q.x0 && b.min.x < q.x1 && b.max.z > q.z0 && b.min.z < q.z1), inWall = (x, z) => walls.some((b) => x > b.min.x - 1.5 && x < b.max.x + 1.5 && z > b.min.z - 3 && z < b.max.z + 3);   // ry = ±90°: long axis along z
-    for (let x = q.x0 + 3; x < q.x1 - 3; x += 2.8) for (let z = q.z0 + 4; z < q.z1 - 3; z += 7) if (pip(x, z, p) && !(busy && inW8Site(x, z, 3)) && R() < (busy ? 0.4 : 0.25) && !inWall(x, z)) cars.push({ x, z, ry: Math.PI / 2 * (R() < 0.5 ? 1 : -1), kind: LOT(R) }); }
+    for (let x = q.x0 + 3; x < q.x1 - 3; x += 2.8) for (let z = q.z0 + 4; z < q.z1 - 3; z += 7) if (pip(x, z, p) && [[-1.3, -2.8], [1.3, -2.8], [-1.3, 2.8], [1.3, 2.8]].every(([u, v]) => pip(x + u, z + v, p)) && !(busy && inW8Site(x, z, 3)) && R() < (busy ? 0.4 : 0.25) && !inWall(x, z)) cars.push({ x, z, ry: Math.PI / 2 * (R() < 0.5 ? 1 : -1), kind: LOT(R) }); }
+  // every corner of the stall inside the lot, not just the centre: the lot's fence (realism.js, lunacourts.js) runs on its edge
   placeCars(world, cars, { raycast: false });
   for (const c of cars) { parkedCarBoxes(world, c); if (R() < 0.12) world.cover(c.x, c.z + 2, 0, 1); }
 }

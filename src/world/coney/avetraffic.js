@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { carGeometries, carMaterials, carSpec, CAR_COLORS, wheelInstances, wheelLayout } from '../carkit.js';
 import { buildBus } from '../../vehicles/bus.js';
 import { AVE8 } from './tavern.js';
+import { solidSource, solidAhead } from '../../vehicles/solids.js';
 
 const X0 = -330, X1 = 330, LANE = 3.0, VMAX = 11, ACC = 2.4, BRK = 5, GAP = 2.2, CYC = 34;
 const KINDS = ['sedan', 'suv', 'cab', 'van'], SLOTS = ['paint', 'glass', 'trim', 'lampW', 'lampR', 'plate', 'shadow'];
@@ -37,11 +38,15 @@ export function buildAveTraffic(world) {
   const phase = (ci) => ((Date.now() / 1000 + ((ci + 1) * 7.3 + 8008) % 34) % CYC + CYC) % CYC;
   const aveGreen = (ci) => phase(ci) < 14 + 2.5, crossGreen = (ci) => { const t = phase(ci); return t >= 18 && t < 30; };
   const ahead = (self, list) => { let best = 1e9; for (const o of list) { if (o === self || o.dir !== self.dir) continue; const d = (o.x - self.x) * self.dir; if (d > 0 && d < best) best = d - (o.len + self.len) / 2; } return best; };
+  // the avenue's cars and buses as solids (the Uber drives 8th Ave too); and anything else on the avenue ahead (the Uber, your car) counts in the gap
+  const sol = (c) => { const o = c.sol || (c.sol = { hw: c.B ? 1.28 : 0.95, ave: true }); o.x = c.x; o.z = c.z; o.h = -c.dir * Math.PI / 2; o.hl = c.len / 2; o.v = c.v; return o; };
+  solidSource('ave', () => { const P = ctx.player?.position; return P && Math.abs(P.z - OZ) < 320 ? [...cars, ...buses].map(sol) : []; });
   world.updaters.push((dt) => {
     const P = ctx.player?.position; if (!P || Math.abs(P.z - OZ) > 320 || dt <= 0) return; dt = Math.min(dt, 0.05);
     const all = [...cars, ...buses];
     for (const c of all) {
       let want = c.B ? 9 : VMAX, gap = ahead(c, all);
+      { const a = solidAhead(sol(c), c.x, c.z, -c.dir * Math.PI / 2, c.len / 2, 0.95, 40, 0.3); if (a.o && !a.o.ave) gap = Math.min(gap, a.gap); }
       for (const [ci, cs] of A.cross.entries()) { const line = cs.x - c.dir * (A.CW + 2.5), d = (line - c.x) * c.dir - c.len / 2; if (d > -1 && d < 40 && !aveGreen(ci)) gap = Math.min(gap, d + 1.5); }   // red ahead: stop at the line
       if (Math.abs(P.y - (A.SW)) < 3 && Math.abs(P.z - c.z) < 1.6) { const d = (P.x - c.x) * c.dir - c.len / 2; if (d > 0) gap = Math.min(gap, d - 0.6); }   // you in the lane
       if (c.B) { const d = (c.stopX - c.x) * c.dir; if (!c.served && d > 0 && d < 30) gap = Math.min(gap, d + 0.8); if (!c.served && d <= 0.5 && c.v < 0.3) { c.dwell += dt; if (c.dwell > 8) { c.served = true; c.dwell = 0; } } }

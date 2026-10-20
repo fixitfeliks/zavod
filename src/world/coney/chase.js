@@ -12,6 +12,7 @@ import { carGeometries, carMaterials } from '../carkit.js';
 import { buildBike } from '../../vehicles/bike.js';
 import { hangkit as HK } from '../hangkit.js';
 import { pushOut } from '../../player/collision.js';
+import { solidSource, solidAhead, moveBlocked } from '../../vehicles/solids.js';
 const SPAWN_LO = 0.05;   // m over the feet: what counts as solid when a unit is placed
 
 const EVADE_BASE = 20, EVADE_PER_STAR = 2, EVADE_MAX = 30, SEARCH_OUT = 8;   // SEARCH_OUT: s outside the search circle, unseen, before the stars clear
@@ -61,6 +62,7 @@ export function buildChase(world) {
   bus.on('playerDied', () => wasted());
   bus.on('restart', () => { for (const u of K.units) disposeBike(u); K.units.length = 0; for (const c of K.cars) disposeCar(c); K.cars.length = 0; K.stars = 0; K.crew.heat = 0; renderUI(); });
   bus.on('net:chase', (m) => onRemote(m));
+  solidSource('cops', () => K.cars.filter((c) => !c.gone && c.sol).map((c) => { const o = c.sol; o.x = c.pos.x; o.z = c.pos.z; o.h = c.heading; o.v = c.speed; return o; }));   // the cop cars, for every AI driver
   world.updaters.push((dt) => { try { update(dt); } catch (e) { if ((K.errN = (K.errN || 0) + 1) < 4) console.error('[chase]', e); } });
   W.mapSearch = () => (K.stars && K.t - K.seenT > 2 ? [K.lastKnown.x, K.lastKnown.z, searchR(), K.t - (K.flashT || -9) < 0.4] : null);
   if (typeof window !== 'undefined' && window.__game) window.__game.chase = chaseQA;
@@ -418,6 +420,7 @@ function spawnCar() {
   const n = R.nodes[pick]; const mesh = buildCopCarMesh();
   const c = { vid: K.vid++, ...mesh, pos: new THREE.Vector3(n.x, K.W.groundHeight?.(n.x, n.z) ?? 0, n.z), heading: 0, speed: 0, node: pick, path: null, pi: 0, replanT: 0, state: 'drive', manned: true, seenT: -1e9, fireT: 1.5, leaving: false, idleT: 0, crew: [] };
   const nx = R.adj[pick][0][0]; c.heading = Math.atan2(-(R.nodes[nx].x - n.x), -(R.nodes[nx].z - n.z));
+  c.sol = { x: c.pos.x, z: c.pos.z, h: c.heading, v: 0, hl: COP_HL, hw: COP_HW, ext: true, cop: c.vid };
   place(c); K.cars.push(c); return c;
 }
 function place(c) { c.group.position.copy(c.pos); c.group.rotation.y = c.heading; }
@@ -460,13 +463,16 @@ function updateCars(dt) {
     drive(c, dt, veh);
   }
 }
+const COP_HL = 2.4, COP_HW = 0.95, COP_GAP = 2.5, COP_LANE = 1.9;   // m: the sedan kit's half length / width; bumper gap when stopped behind someone; right of the centreline
 function drive(c, dt, veh) {
   const p = K.ctx.player.position;
   if (!c.path || c.pi >= c.path.length) { c.speed = damp(c.speed, 0, 3, dt); return; }
   let wp = c.path[c.pi];
   while (wp && hyp(wp.x, wp.z, c.pos.x, c.pos.z) < 4.5) { if (wp.node >= 0) c.node = wp.node; c.pi++; wp = c.path[c.pi]; }
   if (!wp) return;
-  const want = Math.atan2(-(wp.x - c.pos.x), -(wp.z - c.pos.z)); const dh = wrap(want - c.heading);
+  // keep right: aim at the waypoint moved COP_LANE to the right of the street (the centreline put it face to face with oncoming traffic)
+  const pv = c.path[c.pi - 1] || c.pos, sx = wp.x - pv.x, sz = wp.z - pv.z, sl = Math.hypot(sx, sz) || 1, ax = wp.x - sz / sl * COP_LANE, az = wp.z + sx / sl * COP_LANE;
+  const want = Math.atan2(-(ax - c.pos.x), -(az - c.pos.z)); const dh = wrap(want - c.heading);
   const next = c.path[c.pi + 1]; let corner = 0; if (next) corner = Math.abs(wrap(Math.atan2(-(next.x - wp.x), -(next.z - wp.z)) - want));
   const toWp = hyp(wp.x, wp.z, c.pos.x, c.pos.z);
   let vmax = c.leaving ? 12 : c.patrol && !K.stars ? 9 : veh ? CAR_PURSUIT : CAR_SPEED;
@@ -476,10 +482,13 @@ function drive(c, dt, veh) {
   const fx = -Math.sin(c.heading), fz = -Math.cos(c.heading);
   const ahead = (x, z, r) => { const dx = x - c.pos.x, dz = z - c.pos.z; const f = dx * fx + dz * fz; return f > 0 && f < r && Math.abs(dx * -fz + dz * fx) < 2.2; };
   if (!veh && ahead(p.x, p.z, 9)) vmax = 0;
-  for (const o of K.cars) if (o !== c && ahead(o.pos.x, o.pos.z, 9)) vmax = Math.min(vmax, o.speed * 0.8);
+  // every vehicle ahead (traffic, buses, the Uber, other cop cars, yours): follow with a gap, and never move into one
+  if (c.sol) { const a = solidAhead(c.sol, c.pos.x, c.pos.z, c.heading, COP_HL, COP_HW, 20, 0.1); if (a.o) vmax = Math.min(vmax, Math.max(0, a.v) + Math.max(0, a.gap - COP_GAP) * 0.9); }
   c.speed = damp(c.speed, vmax, c.speed < vmax ? 1.6 : 4, dt);
   c.heading = wrap(c.heading + Math.max(-1, Math.min(1, dh * 2.5)) * Math.min(2.2, 0.25 + c.speed * 0.25) * dt);
-  c.pos.x += -Math.sin(c.heading) * c.speed * dt; c.pos.z += -Math.cos(c.heading) * c.speed * dt;
+  const nx = c.pos.x - Math.sin(c.heading) * c.speed * dt, nz = c.pos.z - Math.cos(c.heading) * c.speed * dt;
+  if (c.sol) { c.sol.x = c.pos.x; c.sol.z = c.pos.z; c.sol.h = c.heading; c.sol.v = c.speed; }   // keep the self box's heading live too: stale (grid-refresh-only) heading mid-turn let the "already overlapping" check miss a fresh overlap
+  if (c.sol && moveBlocked(c.sol, nx, nz, c.heading)) c.speed = 0; else { c.pos.x = nx; c.pos.z = nz; }
   c.pos.y = K.W.groundHeight?.(c.pos.x, c.pos.z) ?? 0;
   c.body.rotation.z = Math.max(-0.05, Math.min(0.05, -dh * c.speed * 0.01));
   place(c);

@@ -24,11 +24,12 @@ import { BoxGrid, rectBlocked } from '../../vehicles/collide.js';
 import { hangkit as HK } from '../hangkit.js';
 import { adoptFolk, folkFlee } from './chill.js';
 import { buildBus, BUS } from '../../vehicles/bus.js';
+import { solidSource, staticSolids, solidsNear, moveBlocked, obbOverlap } from '../../vehicles/solids.js';
 
 const RM = 8;                    // max corner radius (m)
 const CYC = 34;                  // signal cycle (s): A green 0-14, amber 14-17, all red 17-18, B green 18-30, amber 30-33, all red
 const A_MAX = 1.9, B_COMF = 2.6, T_HEAD = 1.25, S0 = 2.2;   // IDM
-const JAM_MAX = 25, BUS_JAM = 12;   // s stuck behind a stopped car (in view) before slipping through it: anyone / the bus you ride
+const JAM = 9, BUS_JAM = 12;   // s stuck behind a stopped car before the deadlock breaker: one of the pair out of sight is recycled / the bus you ride clears its way
 const NAMES = ['SAL', 'VINNIE', 'DMITRI', 'TONY', 'MARISOL', 'OKSANA', 'DESHAWN', 'LUIS', 'FRANKIE', 'IRINA', 'BORIS', 'KEISHA', 'ANGELO', 'SVETA', 'RAY'];
 const SIGNALS = [[-86, -132], [46, -109], [297, -47], [-87, -290], [-87, -536]];
 const YELL = ['MOVE IT, BUDDY!', 'Yo! You wanna get run over?!', 'Get outta the road!', 'Нашёл где стоять!', 'C\'mon, c\'mon, c\'mon…', 'I\'m WALKIN\' here? No — I\'m DRIVIN\' here!'];
@@ -103,6 +104,63 @@ function buildGraph(world) {
     for (const e of n.adj) n.sig.grp.set(e.to, Math.abs(e.dx * main.dx + e.dz * main.dz) > 0.7 ? 0 : 1); });
   console.log('[traffic] road nodes', nodes.filter((n) => n.adj.length).length, '· directed segments', segs.length, '· dropped (blocked)', dropped, '· signals', nsig);
   return { nodes, segs, total, grid };
+}
+// a bus is 2.55 m wide: on the narrow streets (one lane each way) the kerb cars along its route would have its side in them
+function clearBusRoutes(world) {
+  { let n = 0; const N = T.G.nodes, reach = BUS.w / 2 + 0.05;
+    for (const r of T.routes) for (let i = 0; i < r.nodes.length; i++) { const A = N[r.nodes[i]], B = N[r.nodes[(i + 1) % r.nodes.length]], e = edge(r.nodes[i], r.nodes[(i + 1) % r.nodes.length]); if (!e) continue;
+      const L = Math.hypot(B.x - A.x, B.z - A.z), dx = (B.x - A.x) / L, dz = (B.z - A.z) / L, off = laneOff(e.w, 1);   // its lane (the pull-in at a stop is cleared in buildRoute)
+      for (const c of world.parkedCars || []) { if (c.gone) continue; const px = c.x - A.x, pz = c.z - A.z, a = px * dx + pz * dz; if (a < -3 || a > L + 3) continue; const l = pz * dx - px * dz, S = parkedSolid(c);
+        if (Math.abs(l - off) < reach + S.hw) { dropParked(c); n++; } } }
+    // and the kerb it pulls in over before each stop (PULL_IN m): cars parked after buildRoute (or past its check) were in the way and held it there
+    for (const r of T.routes) for (const S of r.stops) { const lo = laneOff(S.w, 1);
+      for (const c of world.parkedCars || []) { if (c.gone) continue; const px = c.x - S.x, pz = c.z - S.z, a = px * S.dx + pz * S.dz; if (a < -PULL_IN - 8 || a > 14) continue; const l = pz * S.dx - px * S.dz, hw = parkedSolid(c).hw;
+        if (l > lo - reach - hw && l < lo + S.shift + reach + hw) { dropParked(c); n++; } } }
+    console.log('[traffic] parked cars cleared off the bus routes', n); }
+}
+/** a parked car is gone for good: its instances hidden, its colliders sunk out of the world */
+function dropParked(c) { hideParkedCar(c); c.gone = true; for (const b of [...carBoxes(c), ...(c.loose || [])]) { b.min.set(0, -9999, 0); b.max.set(0.001, -9998, 0.001); } }
+const LANE_CLEAR = 0.8;   // m between a parked car's body and a traffic lane's centreline (a traffic car is ~0.9 m half-wide: they pass, mirrors close)
+/** every parked car (kerbs, lots, the terminal) checked once the colliders and the lanes exist: one through a fence, a light pole, a
+ *  wall, or sitting on a traffic lane is removed. The placers each check what they knew of; fences and courts built after them
+ *  (realism.js, lunacourts.js) and lanes moved after them (stillwell.js) they couldn't. */
+function clearParked(world) {
+  const list = world.parkedCars || []; if (!list.length) return;
+  // a car's own boxes: carBoxes, or (brighton.js, tavern.js) a car-sized box centred on it
+  const ctr = new Map(), ck = (x, z) => Math.round(x) * 65536 + Math.round(z); for (const c of list) ctr.set(ck(c.x, c.z), c);
+  const carOf = (b) => { if (b.max.y - b.min.y > 2.2 || b.max.x - b.min.x > 5.2 || b.max.z - b.min.z > 5.2) return null; const x = (b.min.x + b.max.x) / 2, z = (b.min.z + b.max.z) / 2;
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) { const c = ctr.get(ck(x, z) + i * 65536 + j); if (c && Math.hypot(c.x - x, c.z - z) < 0.6) return c; } return null; };
+  const own = new Set(list.flatMap(carBoxes)), grid = new BoxGrid(4);
+  grid.build(world.ctx.colliders.filter((b) => { if (own.has(b) || b.max.x - b.min.x > 300 || b.max.z - b.min.z > 300) return false; const c = carOf(b); if (c && !c.boxes && !c.box) { (c.loose ||= []).push(b); return false; } return true; }));
+  // lane centrelines sampled every metre, bucketed by 4 m cell
+  const lane = new Map(), key = (x, z) => Math.floor(x / 4) * 65536 + Math.floor(z / 4), N = T.G.nodes;
+  for (const A of N) for (const e of A.adj) { const B = N[e.to], L = Math.hypot(B.x - A.x, B.z - A.z), n = Math.ceil(L);
+    for (const off of e.w >= 20 ? [laneOff(e.w, 0), laneOff(e.w, 1)] : [laneOff(e.w, 0)]) for (let i = 0; i <= n; i++) { const t = i / n, x = A.x + (B.x - A.x) * t - e.dz * off, z = A.z + (B.z - A.z) * t + e.dx * off, k = key(x, z); (lane.get(k) || lane.set(k, []).get(k)).push(x, z); } }
+  const kept = []; let walls = 0, lanes = 0, cars = 0;
+  for (const c of list) {
+    if (c.gone) continue; const K = carSpec(c.kind) || carSpec('sedan'), hl = K.len / 2, hw = K.w / 2, y = c.y || 0, fx = Math.cos(c.ry || 0), fz = -Math.sin(c.ry || 0), rx = -fz, rz = fx;
+    const ex = hl * Math.abs(fx) + hw * Math.abs(rx), ez = hl * Math.abs(fz) + hw * Math.abs(rz);
+    // walls / fences / poles: separating axes between the car's rectangle (5 cm in) and each box
+    let hit = false;
+    for (const b of grid.query(c.x - ex, c.z - ez, c.x + ex, c.z + ez)) {
+      if (b.max.y <= y + 0.3 || b.min.y >= y + 1.3) continue;
+      const bx = (b.min.x + b.max.x) / 2 - c.x, bz = (b.min.z + b.max.z) / 2 - c.z, hx = (b.max.x - b.min.x) / 2, hz = (b.max.z - b.min.z) / 2;
+      if (Math.abs(bx) >= ex - 0.05 + hx || Math.abs(bz) >= ez - 0.05 + hz) continue;
+      if (Math.abs(bx * fx + bz * fz) >= hl - 0.05 + hx * Math.abs(fx) + hz * Math.abs(fz)) continue;
+      if (Math.abs(bx * rx + bz * rz) >= hw - 0.05 + hx * Math.abs(rx) + hz * Math.abs(rz)) continue;
+      hit = true; break;
+    }
+    if (hit) { walls++; dropParked(c); continue; }
+    // on a lane: any lane sample inside the body grown by LANE_CLEAR
+    const g0x = Math.floor((c.x - ex - LANE_CLEAR) / 4), g1x = Math.floor((c.x + ex + LANE_CLEAR) / 4), g0z = Math.floor((c.z - ez - LANE_CLEAR) / 4), g1z = Math.floor((c.z + ez + LANE_CLEAR) / 4);
+    for (let ix = g0x; ix <= g1x && !hit; ix++) for (let iz = g0z; iz <= g1z && !hit; iz++) { const P = lane.get(ix * 65536 + iz); if (!P) continue;
+      for (let i = 0; i < P.length; i += 2) { const dx = P[i] - c.x, dz = P[i + 1] - c.z; if (Math.abs(dx * fx + dz * fz) < hl + LANE_CLEAR && Math.abs(dx * rx + dz * rz) < hw + LANE_CLEAR) { hit = true; break; } } }
+    if (hit) { lanes++; dropParked(c); continue; }
+    // two parked cars in one spot (two placers, one kerb)
+    if (kept.some((o) => { const dx = o.x - c.x, dz = o.z - c.z; if (Math.abs(Math.cos((o.ry || 0) - (c.ry || 0))) < 0.7) return Math.hypot(dx, dz) < 2.6; return Math.abs(dx * fx + dz * fz) < hl * 2 - 0.2 && Math.abs(dx * rx + dz * rz) < hw * 2 - 0.1; })) { cars++; dropParked(c); continue; }
+    kept.push(c);
+  }
+  console.log('[traffic] parked cars removed: in a wall / fence / pole', walls, '· on a lane', lanes, '· on another car', cars, '· kept', kept.length);
 }
 /** signal state for an approach from `from` into signalised node n: 'G' | 'Y' | 'R' */
 function signalFor(n, from, now = Date.now()) {
@@ -269,7 +327,7 @@ export function buildTraffic(world) {
   for (let i = 0; i < budget; i++) {
     const kind = kinds[i], R = T.kinds[kind], slot = (used[kind] = (used[kind] ?? -1) + 1);
     const c = { id: i, kind, R, slot, active: false, q: new Int32Array(5), rng: mulberry(i + 1), lane: 0, s: 0, v: 0, a: 0, x: 0, y: 0, z: 0, h: 0, hPrev: 0, yawRate: 0, spin: 0, shift: 0, shiftT: 0, ox: 0, oz: 0, oyaw: 0,
-      state: 'drive', stateT: 0, driver: true, real: null, color: new THREE.Color(), shirt: 0, skin: 0, hornT: 0, blockT: 0, waitT: 0, ghostT: 0, avoid: null, panic: 0, brake: 0, pitch: 0, roll: 0, hl: R.hl, hw: R.hw, seed: 0, far: false, acc: 0 };
+      state: 'drive', stateT: 0, driver: true, real: null, color: new THREE.Color(), shirt: 0, skin: 0, hornT: 0, blockT: 0, waitT: 0, avoid: null, panic: 0, brake: 0, pitch: 0, roll: 0, hl: R.hl, hw: R.hw, seed: 0, far: false, acc: 0 };
     const body = new THREE.Mesh(new THREE.BoxGeometry(R.hl * 2 - 0.1, R.belt - 0.25, R.hw * 2 - 0.1), hbm); body.userData = { surface: 'metal', traffic: c, noLOS: true };
     const drv = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.75, 0.5), hbm); drv.userData = { traffic: c, onHit: (dmg, head, point) => shootDriver(c, dmg, point) };
     world.scene.add(body); world.scene.add(drv); ctx.raycastTargets.push(body, drv); c.hbBody = body; c.hbDrv = drv;
@@ -289,8 +347,10 @@ export function buildTraffic(world) {
   try { HK.spot({ pos: T.spotPos, r: 1.9, dy: 1.6, when: () => !!T.jackable, prompt: () => (T.jackable?.driver && T.jackable.state !== 'dead' ? 'F — CARJACK' : 'F — DRIVE'), act: () => { if (T.jackable) jack(T.jackable); } }); } catch (e) { console.warn('[traffic] spot', e?.message || e); }
   try { buildBuses(world); } catch (e) { console.warn('[traffic] buses', e); }
   world.updaters.push((dt) => { try { update(dt); } catch (e) { if ((T.errN = (T.errN || 0) + 1) < 4) console.error('[traffic]', e); } });
+  solidSource('traffic', () => T.cars.filter((c) => c.active));
+  solidSource('player', playerSolids);
   if (typeof window !== 'undefined' && window.__game) window.__game.traffic = trafficQA;
-  W.traffic = { cars: () => T.cars.filter((c) => c.active), graph: () => T.G };   // graph: the validated lanes (coney/uber.js routes on them)
+  W.traffic = { cars: () => T.cars.filter((c) => c.active), graph: () => T.G, recycle: (c) => { if (T.cars.includes(c) && c.active && !c.bus) despawn(c); } };   // graph: the validated lanes (coney/uber.js routes on them)
   return T;
 }
 
@@ -312,7 +372,8 @@ function spawn(c, boot) {
     c.rng = rng; c.lane = seg.w >= 20 && rng() < 0.45 ? 1 : 0;
     startOn(c, seg.a, seg.b, s);
     evalAt(c, c.s, _o); c.x = _o.x; c.z = _o.z; c.h = Math.atan2(-_o.dx, -_o.dz); c.hPrev = c.h; c.y = T.W.groundHeight?.(c.x, c.z) ?? 0;
-    c.v = Math.min(roadSpeed(seg.w) * 0.7, 7); c.state = 'drive'; c.stateT = 0; c.driver = true; c.shift = 0; c.shiftT = 0; c.ox = c.oz = c.oyaw = 0; c.avoid = null; c.panic = 0; c.hornT = 0; c.blockT = 0; c.waitT = 0; c.ghostT = 0; c.brake = 0;
+    if (solidsNear(c.x, c.z, 8).some((o) => obbOverlap(c.x, c.z, c.h, c.hl + 1.5, c.hw, o))) continue;   // clear of every vehicle (cops, the Uber, you, parked)
+    c.v = Math.min(roadSpeed(seg.w) * 0.7, 7); c.state = 'drive'; c.stateT = 0; c.driver = true; c.shift = 0; c.shiftT = 0; c.ox = c.oz = c.oyaw = 0; c.avoid = null; c.panic = 0; c.hornT = 0; c.blockT = 0; c.waitT = 0; c.jamT = 0; c.brake = 0;
     c.pers = 0.85 + rng() * 0.3; c.seed = (rng() * 1e6) | 0;
     c.color.copy(c.kind === 'cab' ? new THREE.Color(rng() < 0.4 ? 0x8cd04a : 0xf2b820) : CAR_COLORS[(rng() * CAR_COLORS.length) | 0]);   // cabs: yellow, or an apple-green boro taxi
     if (c.R.paint) { c.R.paint.setColorAt(c.slot, c.color); c.R.paint.instanceColor.needsUpdate = true; }
@@ -340,6 +401,9 @@ function despawn(c) {
 function update(dt) {
   const ctx = T.ctx, cam = ctx.camera, P = ctx.player?.position; if (!P || !cam) return;
   T.t += dt; T.frame++;
+  if (!T.parkedSolid) { T.parkedSolid = true;   // the first frame: every placer (street.js parks Surf Ave after this module) is done
+    try { clearParked(T.world); clearBusRoutes(T.world); } catch (e) { console.warn('[traffic] parked check', e); }
+    staticSolids((T.world.parkedCars || []).filter((c) => !c.gone).map(parkedSolid)); }
   cam.updateMatrixWorld(); _pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse); _fr.setFromProjectionMatrix(_pm);
   gatherObstacles();
   const now = Date.now();
@@ -377,10 +441,11 @@ function gatherObstacles() {
   for (const v of ctx.vehicles?.list || []) { if (v === mv || !v.parked || !v.spec?.car) continue; if (Math.abs(v.pos.x - p.position.x) > 120 || Math.abs(v.pos.z - p.position.z) > 120) continue; O.push({ x: v.pos.x, z: v.pos.z, vx: 0, vz: 0, hl: v.spec.hz, hw: v.spec.hx, veh: v }); }
   for (const q of T.W.folkObstacles?.() || []) if (Math.abs(q.x - p.position.x) < 120 && Math.abs(q.z - p.position.z) < 120 && roadDist(q.x, q.z) < -0.3) O.push({ x: q.x, z: q.z, vx: 0, vz: 0, hl: 0.35, hw: 0.35, foot: true, ped: true });   // people in the road (crossing on the WALK, diving clear …)
   const net = ctx.net; if (net?.list && net.peer) { try { for (const id of net.list()) { const q = net.peer(id); if (!q?.pos || q.dead) continue; O.push({ x: q.pos.x, z: q.pos.z, vx: 0, vz: 0, hl: q.veh ? 2.3 : 0.35, hw: q.veh ? 1 : 0.35, peer: id }); } } catch {} }
+  for (const o of solidsNear(p.position.x, p.position.z, 120)) if (o.ext) O.push({ x: o.x, z: o.z, vx: -Math.sin(o.h) * o.v, vz: -Math.cos(o.h) * o.v, hl: o.hl, hw: o.hw, veh: o });   // cops, the Uber
 }
 function drive(c, dt, now) {
   if (dt <= 0) return;
-  c.stateT += dt; c.hornT -= dt; c.ghostT -= dt;
+  c.stateT += dt; c.hornT -= dt;
   // ---- states that don't drive
   if (c.state === 'crashed') {
     c.v = Math.max(0, c.v - 7 * dt);
@@ -388,7 +453,7 @@ function drive(c, dt, now) {
     if (c.state === 'crashed' && c.stateT > 4.5) { c.state = 'drive'; c.stateT = 0; }
     pose(c, dt); return;
   }
-  if (c.state === 'abandoned' || c.state === 'dead' || c.state === 'end') { c.v = Math.max(0, c.v - (c.state === 'dead' ? 2.5 : 6) * dt); c.s += c.v * dt; if (c.s > c.L - 0.5 && !advance(c)) c.s = Math.min(c.s, c.L); pose(c, dt); return; }
+  if (c.state === 'abandoned' || c.state === 'dead' || c.state === 'end') { c.v = Math.max(0, c.v - (c.state === 'dead' ? 2.5 : 6) * dt); solidStep(c, dt); c.s += c.v * dt; if (c.s > c.L - 0.5 && !advance(c)) c.s = Math.min(c.s, c.L); pose(c, dt); return; }
   // ---- target speed: street, curve ahead, junction control, whoever is in front
   if (c.hold) { c.v = Math.max(0, c.v - 8 * dt); c.brake = 1; pose(c, dt); return; }
   if (c.state === 'dwell') { c.v = 0; c.dwellT -= dt; c.doorT = c.dwellT > 1.2 ? 1 : 0; if (c.dwellT <= 0) { c.state = 'drive'; c.stateT = 0; c.served = c.stopI; } pose(c, dt); return; }
@@ -424,7 +489,7 @@ function drive(c, dt, now) {
   }
   // leader: another car / bus / you / a friend / a parked player car, in my lane ahead
   const rx = -hz, rz = hx; let best = null, bg = 60, bdv = 0;
-  if (c.ghostT <= 0) for (const o of T.cars) {
+  for (const o of T.cars) {
     if (o === c || !o.active) continue; const dx = o.x - c.x, dz = o.z - c.z; if (dx * dx + dz * dz > 3600) continue;
     const f = dx * hx + dz * hz; if (f <= 0) continue; const l = dx * rx + dz * rz - c.shift;
     const ohx = -Math.sin(o.h), ohz = -Math.cos(o.h), al = ohx * hx + ohz * hz;
@@ -450,18 +515,47 @@ function drive(c, dt, now) {
   if (c.avoid) { c.avoidT -= dt; if (c.avoidT <= 0 || (!obst && c.v > 3 && c.blockT === 0 && c.avoidT < 4)) { c.avoid = null; c.shiftT = 0; } }
   // stuck behind a car that is itself stuck (a gridlocked junction): after a while, nudge through
   if (lim === 'obst' && obst?.ped && c.v < 0.5) { c.pedT = (c.pedT || 0) + dt; if (c.pedT > 3 && c.hornT <= 0) { honk(c); c.hornT = 3 + c.rng() * 3; } } else c.pedT = 0;   // held up by someone in the road: lean on the horn
-  // stuck behind a car for 9 s: slip through it (a deadlock breaker) where you can't see it happen. In view it waits on, up to JAM_MAX s (a queue locked behind a car blocking the box at a signal never clears by itself); a bus
-  // you're riding gets priority and creeps through after BUS_JAM s (you're aboard to get somewhere, not to sit at Surf and W 12th)
-  if (lim === 'car' && c.v < 0.1) { c.waitT += dt; c.jamT = (c.jamT || 0) + dt; if (c.waitT > 9) { const P = T.ctx.player?.position, far = !P || Math.hypot(c.x - P.x, c.z - P.z) > 60;
-    if (far || !inView(c.x, c.y, c.z, 6) || c.jamT > JAM_MAX || (c.bus && T.ride?.c === c && c.jamT > BUS_JAM)) { c.ghostT = 2.5; c.waitT = 0; c.jamT = 0; } else c.waitT = 7; } } else if (c.v > 1) { c.waitT = 0; c.jamT = 0; }
+  // deadlocked (two at a corner, each waiting on the other; a queue behind a car blocking the box): nobody drives through anybody. After
+  // JAM s one of the pair that you can't see is recycled; the bus you ride clears its way after BUS_JAM s (you're aboard to get somewhere)
+  const blocker = c.blockedBy || (lim === 'car' ? best : lim === 'obst' && obst?.veh?.ext ? obst.veh : null);
+  if (blocker && c.v < 0.1) { c.waitT += dt; c.jamT = (c.jamT || 0) + dt; if (c.waitT > JAM) { c.waitT = JAM - 2; unjam(c, blocker); } } else if (c.v > 1) { c.waitT = 0; c.jamT = 0; }
   c.lim = lim;
-  // integrate
-  a = clamp(a, -9, AM); c.a = damp(c.a, a, 6, dt); c.v = Math.max(0, c.v + a * dt);
+  // integrate: never into another vehicle (the step ahead is checked against every solid: traffic, buses, cops, the Uber, you, parked cars)
+  a = clamp(a, -9, AM); c.a = damp(c.a, a, 6, dt); c.v = Math.max(0, c.v + a * dt); solidStep(c, dt);
   c.brake = a < -0.6 || (c.v < 0.3 && lim) ? 1 : 0;
-  const shR = 0.35 + c.v * 0.18; c.shift += clamp(c.shiftT - c.shift, -shR * dt, shR * dt);
+  const shR = 0.35 + c.v * 0.18, dSh = clamp(c.shiftT - c.shift, -shR * dt, shR * dt);
+  if (dSh && moveBlocked(c, c.x + Math.cos(c.h) * dSh, c.z - Math.sin(c.h) * dSh, c.h)) c.shiftT = c.shift; else c.shift += dSh;   // pulling over (a bus to the kerb, going round you): not into whoever is there
   c.s += c.v * dt; let guard = 4; while (c.s > c.L && guard--) { if (!advance(c)) { c.s = c.L; c.v = 0; break; } }
   c.panic = Math.max(0, c.panic - dt);
   pose(c, dt);
+}
+/** the next step would put c into a solid: stop short instead (c.blockedBy says who) */
+const _np = { x: 0, z: 0, dx: 0, dz: 1 };
+function solidStep(c, dt) {
+  const step = c.v * dt; c.blockedBy = null; if (step <= 0) return;
+  // the pose the path gives after this step (on a sharp turn the body swings: a straight or yaw-rate guess missed it), past the segment end along the next one
+  const s1 = c.s + step, over = Math.max(0, s1 - c.L); evalAt(c, Math.min(s1, c.L), _np);
+  if (over > 0) { _np.x += c.dOx * over; _np.z += c.dOz * over; _np.dx = c.dOx; _np.dz = c.dOz; }
+  const x = _np.x - _np.dz * c.shift + c.ox, z = _np.z + _np.dx * c.shift + c.oz, h = Math.atan2(-_np.dx, -_np.dz) + c.oyaw, o = moveBlocked(c, x, z, h);
+  if (o) { c.v = 0; c.a = Math.min(c.a, 0); c.blockedBy = o; c.brake = 1; }
+}
+const seen = (c) => { const P = T.ctx.player?.position; return !!P && Math.hypot(c.x - P.x, c.z - P.z) < 60 && inView(c.x, c.y, c.z, 6); };
+/** break a deadlock without anyone passing through anyone: recycle the blocker if it's a car you can't see (or it holds up the bus you
+ *  ride), else me if you can't see me; in plain view both wait (the junction rules clear most of these on their own) */
+function unjam(c, o) {
+  const car = T.cars.includes(o) && o.active && !o.bus ? o : null;
+  if (car && (!seen(car) || (c.bus && T.ride?.c === c && c.jamT > BUS_JAM))) { despawn(car); c.jamT = 0; return; }
+  if (!c.bus && (!seen(c) || o.ext)) despawn(c);   // face to face with a cop car or the Uber (they don't reverse): this car gives way by leaving
+}
+const PARK_IN = 0.2;   // m: a parked car's solid is this much inside its paint (kerb cars sit a body's width off the lane; brushing mirrors isn't a crash)
+function parkedSolid(c) { const K = carSpec(c.kind) || carSpec('sedan'); return { x: c.x, z: c.z, h: (c.ry || 0) - Math.PI / 2, hl: K.len / 2 - PARK_IN, hw: K.w / 2 - PARK_IN, v: 0, parked: true, get gone() { return !!c.gone; } }; }
+/** you (driving, parked player vehicles) and friends' cars, as solids for every AI driver */
+function playerSolids() {
+  const ctx = T.ctx, out = [], P = ctx.player?.position; if (!P) return out;
+  for (const v of ctx.vehicles?.list || []) { if (!v.pos || v.pos.y < -50 || v.gone || !v.spec || Math.abs(v.pos.x - P.x) > 400 || Math.abs(v.pos.z - P.z) > 400) continue;
+    out.push({ x: v.pos.x, z: v.pos.z, h: v.heading || 0, hl: v.spec.hz || 1, hw: v.spec.hx || 0.5, v: v.speed || 0, veh: v, me: v === ctx.vehicles.mounted }); }
+  const net = ctx.net; if (net?.list && net.peer) { try { for (const id of net.list()) { const q = net.peer(id); if (!q?.pos || !q.veh || q.dead) continue; out.push({ x: q.pos.x, z: q.pos.z, h: q.heading || 0, hl: 2.4, hw: 1, v: 0, peer: id }); } } catch {} }
+  return out;
 }
 function laneFreeLeft(c) { for (const o of T.cars) { if (!o.active || o === c) continue; const dx = o.x - c.x, dz = o.z - c.z, f = dx * c.dx + dz * c.dz; if (f < -6 || f > 35) continue; const l = dx * -c.dz + dz * c.dx; if (l < -1 && l > -7) return false; } return true; }
 function boxJammed(c, n) { const N = T.G.nodes[n]; for (const o of T.cars) { if (!o.active || o === c || o.v > 0.6 || o.cleared !== n) continue; if (Math.hypot(o.x - N.x, o.z - N.z) < 9) return true; } return false; }   // only cars that are in the junction (past their line), not ones waiting at it
@@ -691,13 +785,13 @@ function roadDist(x, z) { let best = 1e9; for (const r of OSM.r) { if (r.w < 9) 
 const r2 = (v) => Math.round(v * 100) / 100;
 export const trafficQA = {
   _T: () => T,
-  buses: () => T ? T.cars.filter((c) => c.bus).map((c) => ({ id: c.id, lim: c.lim || null, ob: c.obst ? { x: r2(c.obst.x), z: r2(c.obst.z), ped: !!c.obst.ped, me: !!c.obst.me, veh: !!c.obst.veh, peer: c.obst.peer || null } : null, lead: c.leader?.id ?? null, route: c.route.id, x: r2(c.x), z: r2(c.z), h: r2(c.h), v: r2(c.v), state: c.state, stop: c.state === 'dwell' ? c.route.stops[c.stopI].name : null, next: c.route.stops[c.nextStop].name, door: r2(c.doorK || 0), road: r2(roadDist(c.x, c.z)), riding: T.ride?.c === c })) : [],
+  buses: () => T ? T.cars.filter((c) => c.bus).map((c) => ({ id: c.id, lim: c.lim || null, ob: c.obst ? { x: r2(c.obst.x), z: r2(c.obst.z), ped: !!c.obst.ped, me: !!c.obst.me, veh: !!c.obst.veh, peer: c.obst.peer || null } : null, lead: c.leader?.id ?? null, blocked: c.blockedBy ? [c.blockedBy.parked ? 'parked' : c.blockedBy.kind || (c.blockedBy.cop != null ? 'cop' : c.blockedBy.uber != null ? 'uber' : c.blockedBy.veh ? 'player' : 'x'), r2(c.blockedBy.x), r2(c.blockedBy.z)] : null, route: c.route.id, x: r2(c.x), z: r2(c.z), h: r2(c.h), v: r2(c.v), state: c.state, stop: c.state === 'dwell' ? c.route.stops[c.stopI].name : null, next: c.route.stops[c.nextStop].name, door: r2(c.doorK || 0), road: r2(roadDist(c.x, c.z)), riding: T.ride?.c === c })) : [],
   board: () => (T.board ? (boardBus(T.board), true) : false), toStop(id) { const c = T.cars[id]; if (!c?.bus) return null; const S = c.route.stops[c.nextStop]; T.ctx.player.teleport(S.px, 0, S.pz, 0, 0); return S.name; },
   toBusDoor(id) { const c = T.cars[id]; if (!c?.bus) return null; c.B.group.updateMatrixWorld(); busPoint(c, (BUS.doorF[0] + BUS.doorF[1]) / 2, BUS.w / 2 + 1.0, _v); T.ctx.player.teleport(_v.x, c.y, _v.z, c.h + Math.PI / 2, 0); return [r2(_v.x), r2(_v.z)]; },
   toBusDriver(id) { const c = T.cars[id]; if (!c?.bus) return null; c.B.group.updateMatrixWorld(); busPoint(c, BUS.eye.x, -BUS.w / 2 - 0.8, _v); T.ctx.player.teleport(_v.x, c.y, _v.z, c.h - Math.PI / 2, 0); return [r2(_v.x), r2(_v.z)]; },
   ride: () => T.ride ? { route: T.ride.c.route.id, bus: T.ride.c.id, x: r2(T.ctx.player.position.x), z: r2(T.ctx.player.position.z) } : null,
   state: () => T && { cars: T.cars.filter((c) => c.active && !c.bus).length, budget: T.budget, ring: T.ring, moving: T.cars.filter((c) => c.active && c.v > 1).length, people: T.people.filter((p) => p.car).length, ...T.stats, jackable: T.jackable ? T.jackable.id : null },
-  cars: () => T ? T.cars.filter((c) => c.active).map((c) => ({ lim: c.lim, wait: +(c.waitT || 0).toFixed(1), ghost: +(c.ghostT || 0).toFixed(1), q: c.q?.slice(0, 4), cleared: c.cleared, id: c.id, kind: c.kind, x: r2(c.x), z: r2(c.z), v: r2(c.v), h: r2(c.h), state: c.state, driver: c.driver, real: !!c.real, road: r2(roadDist(c.x, c.z)), lane: c.lane })) : [],
+  cars: () => T ? T.cars.filter((c) => c.active).map((c) => ({ lim: c.lim, wait: +(c.waitT || 0).toFixed(1), blocked: c.blockedBy ? c.blockedBy.id ?? c.blockedBy.kind ?? 'x' : null, q: c.q?.slice(0, 4), cleared: c.cleared, id: c.id, kind: c.kind, x: r2(c.x), z: r2(c.z), v: r2(c.v), h: r2(c.h), state: c.state, driver: c.driver, real: !!c.real, road: r2(roadDist(c.x, c.z)), lane: c.lane })) : [],
   roadDist,
   /** stand at the driver's door of car id (or the nearest active car) */
   toDoor(id) { const c = id != null ? T.cars[id] : T.cars.filter((c) => c.active).sort((a, b) => Math.hypot(a.x - T.ctx.player.position.x, a.z - T.ctx.player.position.z) - Math.hypot(b.x - T.ctx.player.position.x, b.z - T.ctx.player.position.z))[0]; if (!c?.active) return null; c.v = 0; c.hold = true; doorPos(c, _v); T.ctx.player.teleport(_v.x, c.y, _v.z, c.h - Math.PI / 2, 0); return c.id; },
@@ -742,13 +836,14 @@ function buildRoute(R) {
   // stops: every listed stop within 12 m of this loop, on the kerb side of the direction of travel
   const stops = [];
   for (const [name, sx, sz] of BUS_STOPS) {
-    let best = null; for (let i = 0; i < nodes.length; i++) { const a = N[nodes[i]], b = N[nodes[(i + 1) % nodes.length]], dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1, t = clamp(((sx - a.x) * dx + (sz - a.z) * dz) / L2, 0.05, 0.95), px = a.x + dx * t, pz = a.z + dz * t, d = Math.hypot(sx - px, sz - pz);
+    let best = null; for (let i = 0; i < nodes.length; i++) { const a = N[nodes[i]], b = N[nodes[(i + 1) % nodes.length]], dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz || 1, t = ((sx - a.x) * dx + (sz - a.z) * dz) / L2, px = a.x + dx * t, pz = a.z + dz * t, d = Math.hypot(sx - px, sz - pz);
+      if (t < 0.05 || t > 0.95) continue;   // the stop's foot must fall inside the block: clamped to a segment end (a route only turning past it) it was offset into the junction mouth, the shelter in the street at Surf Av
       if (d < 12 && (!best || d < best.d)) { const L = Math.sqrt(L2), e = edge(nodes[i], nodes[(i + 1) % nodes.length]); best = { d, name, rs: cum[i] + t * L, x: px, z: pz, dx: dx / L, dz: dz / L, w: e?.w || 10 }; } }
     if (best) { const kerb = best.w / 2 - 1.6, sh = Math.max(0, kerb - laneOff(best.w, 1)); stops.push({ ...best, shift: sh, px: best.x - best.dz * (best.w / 2 + 1.2), pz: best.z + best.dx * (best.w / 2 + 1.2) }); }
     // the bus pulls in to the kerb here: no car parked in its way (they're placed before the stops are known)
     // and none along the kerb it pulls in over (PULL_IN m before the stop): one there was 2 m into the B36 at the terminal
     const inBusWay = (c) => { const dx = c.x - best.x, dz = c.z - best.z, a = dx * best.dx + dz * best.dz, l = dz * best.dx - dx * best.dz; return a > -PULL_IN - 5 && a < 12 && l > 0 && l < best.w / 2 + 2; };
-    if (best) for (const c of T?.world?.parkedCars || []) if (!c.gone && (Math.hypot(c.x - best.x, c.z - best.z) < 30 || inBusWay(c))) { hideParkedCar(c); c.gone = true; for (const b of carBoxes(c)) { b.min.set(0, -9999, 0); b.max.set(0.001, -9998, 0.001); } }
+    if (best) for (const c of T?.world?.parkedCars || []) if (!c.gone && (Math.hypot(c.x - best.x, c.z - best.z) < 30 || inBusWay(c))) dropParked(c);
   }
   stops.sort((a, b) => a.rs - b.rs);
   // timetable: run at BUS_V between stops, DWELL at each → position on the loop at any wall-clock second
@@ -769,7 +864,7 @@ function buildBuses(world) {
       for (const m of B.meshes) if (m.parent === B.group) { m.userData.surface = 'metal'; m.userData.noLOS = true; }
       const c = { id: T.cars.length, bus: true, kind: 'bus', route: r, off: k * r.cycle / n + (hash(R.id.charCodeAt(2), 5) % 60), B, R: { hl: BUS.len / 2, hw: BUS.w / 2, eye: BUS.eye, wr: BUS.wheelR, belt: 1.05, ims: [] },
         active: true, q: new Int32Array(5), rng: mulberry(900 + T.cars.length), lane: 1, s: 0, v: 0, a: 0, x: 0, y: 0, z: 0, h: 0, yawRate: 0, spin: 0, shift: 0, shiftT: 0, ox: 0, oz: 0, oyaw: 0,
-        state: 'drive', stateT: 0, driver: true, hornT: 0, blockT: 0, waitT: 0, ghostT: 0, panic: 0, brake: 0, pitch: 0, roll: 0, hl: BUS.len / 2, hw: BUS.w / 2, seed: 4242 + k * 17, pers: 0.72, amax: 1.1, acc: 0, stopT: 0, far: false, cleared: -1, doorK: 0, doorT: 0, nextStop: 0 };
+        state: 'drive', stateT: 0, driver: true, hornT: 0, blockT: 0, waitT: 0, panic: 0, brake: 0, pitch: 0, roll: 0, hl: BUS.len / 2, hw: BUS.w / 2, seed: 4242 + k * 17, pers: 0.72, amax: 1.1, acc: 0, stopT: 0, far: false, cleared: -1, doorK: 0, doorT: 0, nextStop: 0 };
       const drv = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.8, 0.5), hbm); drv.userData = { traffic: c, onHit: (dmg, head, point) => shootDriver(c, dmg, point) }; world.scene.add(drv); ctx.raycastTargets.push(drv);
       for (const m of B.meshes) if (m.parent === B.group) ctx.raycastTargets.push(m);
       c.hbDrv = drv; c.hbBody = new THREE.Object3D();
@@ -796,6 +891,7 @@ function placeBus(c, reset) {
   const rs = routePos(c); let k = 0; while (k < r.stops.length && r.stops[k].rs < rs - 1) k++; c.nextStop = k % r.stops.length;
   if (sc.stop != null) { c.nextStop = sc.stop; const S = r.stops[sc.stop]; c.shift = c.shiftT = S.shift; }
   c.B.group.visible = true; pose(c, 0.016);
+  for (const o of T.cars) if (o !== c && o.active && !o.bus && Math.hypot(o.x - c.x, o.z - c.z) < c.hl + o.hl + 1) despawn(o);   // put back on its timetable out of sight: no car left inside it
 }
 function busPace(c, now) { const r = c.route, sc = schedAt(r, now / 1000 + c.off), lag = wrapD(sc.s - routePos(c), r.Lr); return clamp(0.85 + lag / 70, 0.5, 1.3); }
 function busStop(c) {
@@ -905,6 +1001,7 @@ function busStopProps(world, stops) {
     for (const k of [0, Math.PI]) { const g = new THREE.PlaneGeometry(0.46, 0.92); g.rotateY(Math.PI / 2 + k); g.translate(k ? -0.01 : 0.01, 2.45, 3.2); sign.push(place(g)); }
     world.box([S.px - 0.08, 0, S.pz - 0.08], [S.px + 0.08, 3, S.pz + 0.08]);
     const sx = S.px - S.dz * 1.6, sz = S.pz + S.dx * 1.6;
+    if (roadDist(sx, sz) < 1.4) continue;   // never on the carriageway (a side street's mouth)
     if (rectBlocked(grid, sx - 2.4, sz - 2.4, sx + 2.4, sz + 2.4, 0.3, 2.5)) continue;
     // shelter: 4.2 m long, back wall of glass away from the road, a roof, an ad panel at the downstream end, a bench
     const P = (g) => { g.translate(1.6, 0, 0); return place(g); };
