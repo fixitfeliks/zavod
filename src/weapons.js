@@ -8,6 +8,7 @@ import { buildShotgun, SHOTGUN_SPEC } from './weapons/shotgun.js';
 import { buildScope } from './weapons/scope.js';
 import { FX } from './weapons/fx.js';
 import { Grenades } from './weapons/grenade.js';
+import { windowOpen } from './vehicledamage.js';
 
 // melee keyframes [time s, [dx, dy, dz, rotX, rotY, rotZ]] added on top of the sway node (knife held edge-down, tip forward)
 const SWINGS = [
@@ -526,6 +527,19 @@ function aimAssist(dt, ctx, p, cam, input, hi) {
 /** Weapons are put away while riding an elevator / sitting as a passenger / driving a car (hands on the wheel). Bikes keep the sidearm live. */
 function stowedFor(p) { const m = p?.mounted; return !!(m && (m.elevator || m.dialog || m.craft || (m.spec?.car && (S.weapons[S.cur]?.spec?.slot ?? 0) !== 1))); }   // drivers can drive-by with a pistol (one hand on the wheel); rifles stay stowed   // passengers keep their gun: drive-bys
 
+/** Shooting out of a car's own window: the aim limits come from the window opening itself (no shooting through your own
+ *  car's body or roof), and only once that side's glass is down or already shattered (#183: a broken window stays open). */
+const WIN_YAW_COS_MAX = 0.62, WIN_PITCH_MAX = 1.05;   // ~52° either side of square-on to the car; ~60° up/down
+function carWindowGate(ctx, p) {
+  const m = p?.mounted; if (!m) return true;
+  let heading, open;
+  if (m.spec?.car) { const side = m.spec.eyeSide < 0 ? 'L' : 'R'; heading = m.heading; open = windowOpen(m, 'glassF' + side); }   // driving: p.mounted is the car itself
+  else if (m.passenger) { const win = ctx.uber?.windowState?.(); if (!win) return true; heading = win.heading; open = win.open; }   // Uber: gated; a friend's car has no local mesh to check yet, so it stays ungated
+  else return true;
+  if (!open) return false;
+  return Math.abs(Math.cos(p.yaw - heading)) < WIN_YAW_COS_MAX && Math.abs(p.pitch) < WIN_PITCH_MAX;
+}
+
 // ------------------------------------------------------------------ per-frame
 export function update(dt, ctx) {
   if (!S) return;
@@ -634,7 +648,7 @@ export function update(dt, ctx) {
   S.lower = damp(S.lower, lowerT, 30, dt);
 
   // ---------- firing ----------
-  const canFire = playing && !S.dead && !stowed && !S.reload && !S.swap && !S.throwing && S.lower < 0.3 && S.sprint < 0.45 && (p?.canFire !== false) && !actionBusy;
+  const canFire = playing && !S.dead && !stowed && !S.reload && !S.swap && !S.throwing && S.lower < 0.3 && S.sprint < 0.45 && (p?.canFire !== false) && !actionBusy && carWindowGate(ctx, p);
   w.fireTimer -= dt;
   if (canFire && dt > 0 && (sp.auto ? S.triggerHeld : S.triggerPressed)) {
     if (w.ammo > 0) { let guard = 0; while (w.fireTimer <= 0 && w.ammo > 0 && guard++ < 3 && !w.needsAction) { fireShot(w); w.fireTimer += 60 / sp.rpm; } }

@@ -5,7 +5,7 @@
 // ground follow with ramp launch, circle-vs-AABB collisions. Cameras: first person (driver's seat / on the bike) and a
 // third-person chase cam (V key / CAM button) with wall avoidance. Running people over: ctx.ai.damage for local soldiers,
 // bus 'vehicleHit' {peerId, speed, damage, point} for remote players (net.js turns it into a hit).
-import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState } from './vehicledamage.js';
+import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState, toggleWindow, windowOpen, swingDoor } from './vehicledamage.js';
 import * as THREE from 'three';
 import { buildBike, buildRider, WHEEL_R, WHEELBASE, FRONT_Z, REAR_Z } from './vehicles/bike.js';
 import { buildJetski } from './vehicles/jetski.js';
@@ -243,6 +243,10 @@ function placeBikes() {
 function placeJetskis() { const L = C.world?.jetskiSpots; if (!C.world?.ocean || !Array.isArray(L)) return; L.forEach((s, i) => makeJetski(s.x, s.z, s.yaw ?? Math.PI, i)); }
 
 // ---------- mount / dismount ----------
+/** the driver's own side (carEye's z sign: negative = the US driver's seat, left side) */
+function driverSide(bike) { return bike.spec.eyeSide < 0 ? 'L' : 'R'; }
+function driverPane(bike) { return 'glassF' + driverSide(bike); }
+function driverDoor(bike) { return 'doorF' + driverSide(bike); }
 function setRaycastable(v, on) {
   const T = C.raycastTargets;
   for (const m of v.meshes) { const i = T.indexOf(m); if (on && i < 0) T.push(m); else if (!on && i > -1) T.splice(i, 1); }
@@ -250,7 +254,7 @@ function setRaycastable(v, on) {
 function mount(bike) {
   const p = C.player; if (!bike || !p || S.mounted || p.mounted || isWrecked(bike)) return false;
   S.mounted = bike; p.mounted = bike; bike.parked = false; unparkBox(bike);
-  if (bike.spec.car) ensurePanels(bike);   // driving it: splits the body into damageable panels if it started merged (hangout's red car, Soviet classics)
+  if (bike.spec.car) { ensurePanels(bike); swingDoor(bike, driverDoor(bike)); }   // driving it: splits the body into damageable panels if it started merged (hangout's red car, Soviet classics); a short hinge pulse as you get in
   setRaycastable(bike, false);   // your own vehicle never eats your bullets (chase cam rays pass through it)
   bike.headlight.visible = true; bike.headlight.intensity = 260; bike.lens.material.emissiveIntensity = bike.spec.car ? 1.2 : 3.5;
   S.lookYaw = clamp(wrap(p.yaw - bike.heading), -bike.spec.lookYaw, bike.spec.lookYaw); S.lookPitch = clamp(p.pitch, -LOOK_PITCH, LOOK_PITCH);
@@ -261,7 +265,7 @@ function mount(bike) {
   if (w?.swap) { const cur = w.current?.slot ?? w.slot ?? 0; if (cur !== 1) { try { if (w.swap(1)) S.prevSlot = cur; } catch {} } }
   try { C.audio?.play?.('bike_idle', { position: bike.pos, volume: 0.6 }); } catch {}
   C.bus.emit('vehicle', { stage: 'mount', bike });
-  C.hud?.toast?.(bike.spec.car ? 'F — GET OUT · W/S GAS/BRAKE · A/D STEER · SPACE HANDBRAKE · V CAMERA' : bike.spec.water ? 'F — GET OFF · W THROTTLE · S BRAKE/REVERSE · A/D STEER · SPACE (HOLD) JUMP · V CAMERA' : 'F — DISMOUNT · W/S THROTTLE · SPACE BRAKE · V CAMERA', 2600);
+  C.hud?.toast?.(bike.spec.car ? 'F — GET OUT · W/S GAS/BRAKE · A/D STEER · SPACE HANDBRAKE · V CAMERA · O WINDOW' : bike.spec.water ? 'F — GET OFF · W THROTTLE · S BRAKE/REVERSE · A/D STEER · SPACE (HOLD) JUMP · V CAMERA' : 'F — DISMOUNT · W/S THROTTLE · SPACE BRAKE · V CAMERA', 2600);
   if (bike.spec.water) { fx().engine(true); }
   applyView(0);
   return true;
@@ -292,6 +296,7 @@ function dismount() {
       p.teleport(bx, groundY(bx, bz), bz, bike.heading + S.lookYaw, 0); C.hud?.toast?.('SWAM ASHORE', 1600);
     }
   }
+  if (sp.car) swingDoor(bike, driverDoor(bike));   // a short hinge pulse as you get out
   p.mounted = null; S.mounted = null; S.qa = null;
   bike.vel.set(0, 0, 0); bike.speed = bike.fwdSpeed = 0; bike.throttle = 0; bike.vy = 0; bike.air = false; bike.parked = true;
   setRaycastable(bike, true);
@@ -833,6 +838,11 @@ export async function init(ctx) {
     hit: (other, impulse) => aiHit(other, impulse),
     /** qa: damage of a car (or the one you drive), make a parked car live */
     qaDamage: (b) => damageState(b || S.mounted), qaPromote: (c) => promote(c),
+    /** windows: the driver's own side pane by default; name picks any pane (qa, or a future passenger seat) */
+    driverPane: (b) => driverPane(b || S.mounted), driverDoor: (b) => driverDoor(b || S.mounted),
+    qaWindow(name, b = S.mounted) { return toggleWindow(b, name || driverPane(b)); },
+    qaWindowOpen(name, b = S.mounted) { return windowOpen(b, name || driverPane(b)); },
+    qaSwingDoor(name, b = S.mounted) { return swingDoor(b, name || driverDoor(b)); },
     spawnCar: (x, z, yaw, kind, color, y, panels) => makeCar(x, z, yaw, kind, color, y ?? ctx.player?.position.y ?? 0, panels ?? true),
     qaSpawn(x, z, yaw = 0, y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeBike(x, z, yaw, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
     qaMount() { const b = nearestBike(); if (!b) return false; return mount(b); },
@@ -936,6 +946,7 @@ export function update(dt, ctx) {
   updateUI(ctx);
   if (dt <= 0) { applyView(0); return; }
   const bike = S.mounted, sp = bike.spec;
+  if (sp.car && playing && input.pressed?.has?.('KeyO')) { input.pressed.delete('KeyO'); const t = toggleWindow(bike, driverPane(bike)); if (t != null) ctx.hud?.toast?.(t ? 'Window down' : 'Window up', 900); }
   // read look deltas the player applied after our last write (mouse + recoil) into the free-look offset
   S.lookYaw += wrap(p.yaw - S.wroteYaw); S.lookPitch += p.pitch - S.wrotePitch;
   S.mountT += dt;

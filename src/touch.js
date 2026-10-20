@@ -25,6 +25,8 @@ const CSS = `
 #touch .pause{right:calc(env(safe-area-inset-right,0px) + 16px);top:calc(env(safe-area-inset-top,0px) + 10px);width:44px;height:30px;border-radius:6px;font-size:12px}
 #touch .act{left:calc(env(safe-area-inset-left,0px) + 120px);bottom:calc(env(safe-area-inset-bottom,0px) + 230px);min-width:96px;height:44px;padding:0 14px;border-radius:22px;font-size:13px;background:rgba(233,162,59,.35);border-color:#e9a23b;display:none}
 #touch .act.show{display:flex}
+#touch .win{left:calc(env(safe-area-inset-left,0px) + 136px);bottom:calc(env(safe-area-inset-bottom,0px) + 290px);width:56px;height:56px;font-size:11px;display:none}
+#touch .win.show{display:flex}
 #touch.stow .fire,#touch.stow .fireL,#touch.stow .ads,#touch.stow .reload,#touch.stow .nade{opacity:.22;pointer-events:none}
 #touch .fireL{font-size:11px;left:calc(env(safe-area-inset-left,0px) + 30px);bottom:calc(env(safe-area-inset-bottom,0px) + 230px);width:70px;height:70px;background:rgba(160,40,30,.3);border-color:rgba(255,120,100,.45)}
 `;
@@ -47,7 +49,8 @@ export async function init(ctx) {
     <div class="btn swap">SWAP</div>
     <div class="btn nade">NADE</div>
     <div class="btn zoom">ZOOM</div>
-    <div class="btn act">TAKE</div>`;
+    <div class="btn act">TAKE</div>
+    <div class="btn win">WIN</div>`;
   document.body.appendChild(root);
   const q = (c) => root.querySelector(c);
   const input = ctx.input; const T = input.touch;
@@ -95,6 +98,7 @@ export async function init(ctx) {
   tap(q('.nade'), () => press('KeyG'));
   hold(q('.zoom'), () => { T.zoom = true; }, () => { T.zoom = false; });   // weapons.js: hold to zoom (rooftops)
   S.act = q('.act'); tap(S.act, () => { input.pressed.add('KeyF'); }); // contextual: pick up weapon / mount / dismount (same F both systems read)
+  S.win = q('.win'); tap(S.win, () => press('KeyO'));   // roll a car's window up / down (driving, or any passenger seat)
   tap(q('.pause'), () => ctx.setState('paused'));
 
   const show = (v) => { root.classList.toggle('hidden', !v); root.classList.toggle('on', v); if (!v) { clearStick(); S.looks.clear(); S.clearFire(); setAds(false); } };
@@ -114,6 +118,7 @@ export async function init(ctx) {
 export function update(dt, ctx) {
   if (!S || !S.act) return;
   const m = ctx.player?.mounted, stowed = !!(m && (m.elevator || m.craft || (m.spec?.car && (ctx.weapons?.current?.spec?.slot ?? 0) !== 1)));   // passengers + pistol drivers shoot
+  S.win.classList.toggle('show', ctx.state === 'playing' && !!(m?.spec?.car || m?.passenger));   // a window to roll: driving, or any passenger seat (friend's car, a stolen car, the Uber)
   if (stowed !== S.stowed) { S.stowed = stowed; S.root.classList.toggle('stow', stowed); if (stowed) { S.clearFire(); S.setAds?.(false); } }
   // fire buttons say what they do (the left one is a second trigger for the left thumb)
   const melee = ctx.weapons?.current?.mode === 'MELEE', ft = melee ? (ctx.weapons?.current?.id === 'fists' ? 'PUNCH' : 'SLASH') : 'FIRE';

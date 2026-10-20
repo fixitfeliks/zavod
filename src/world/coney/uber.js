@@ -47,7 +47,7 @@ let U = null;
 
 export function buildUber(world) {
   const { ctx, W } = world;
-  U = { world, ctx, W, rides: new Map(), cur: null, seat: -1, G: null, tpl: null, open: false, uiT: 0, yawPrev: 0, fadeOn: false, spotPos: new THREE.Vector3(0, -999, 0), lastPhase: '', ownLabel: false };
+  U = { world, ctx, W, rides: new Map(), cur: null, seat: -1, G: null, tpl: null, open: false, uiT: 0, yawPrev: 0, fadeOn: false, spotPos: new THREE.Vector3(0, -999, 0), lastPhase: '', ownLabel: false, winOpen: true };
   K.starter?.('phone');
   K.spot({ pos: U.spotPos, r: BOARD_R, dy: 2.5, when: () => !!boardable(), prompt: () => { const r = boardable(); return r ? `F - GET IN THE UBER · ${r.drv[0]}, black Camry` : ''; }, act: () => { const r = boardable(); if (r) board(r); } });
   buildUI();
@@ -61,7 +61,9 @@ export function buildUber(world) {
   world.updaters.push((dt) => { try { update(dt); } catch (e) { if ((U.err = (U.err || 0) + 1) < 4) console.error('[uber]', e); } });
   // net.js: your seat (sent with your state) and a friend's seat → the world, on our copy of the car
   ctx.uber = { local: () => (U.seat >= 0 && U.cur ? [U.cur.id, U.seat] : null), toWorld: (id, seat) => remoteSeat(id, seat), boardDist: (p) => boardDist(p),
-    dests: () => DESTS.map((d) => ({ id: d.id, name: d.name })), request: (id) => request(id), active: () => !!U.cur, action: () => action(), label: () => actionLabel(), lines: () => statusLines(), canvas: () => U.cv };
+    dests: () => DESTS.map((d) => ({ id: d.id, name: d.name })), request: (id) => request(id), active: () => !!U.cur, action: () => action(), label: () => actionLabel(), lines: () => statusLines(), canvas: () => U.cv,
+    /** weapons.js: the ride you're seated in (null off a ride) — heading + whether the window's down (or already shattered elsewhere) */
+    windowState: () => (U.seat >= 0 && U.cur ? { open: U.winOpen, heading: U.cur.st.h } : null) };
   if (typeof window !== 'undefined' && window.__game) window.__game.uber = qa();
 }
 
@@ -393,11 +395,11 @@ function boardDist(p) { const r = boardable(); return r ? Math.hypot(r.st.x - p.
 function board(r, want = -1) {
   const { ctx } = U, p = ctx.player, me = ctx.net?.id || 'me', mine = r.owner === me;
   const used = new Set(r.riders.values()); const seat = want >= 0 && !used.has(want) ? want : (mine ? BOOKER_ORDER : FRIEND_ORDER).find((s) => !used.has(s)); if (seat == null) { K.toast('The Uber is full', 1400); return; }
-  r.riders.set(me, seat); U.cur = r; U.seat = seat; U.yawPrev = r.st.h; U.lastPhase = ''; if (seat >= 1) showRear(r);
+  r.riders.set(me, seat); U.cur = r; U.seat = seat; U.yawPrev = r.st.h; U.lastPhase = ''; U.winOpen = true; if (seat >= 1) showRear(r);
   p.mounted = { passenger: true, uber: true, speed: 0 }; p.yaw = r.st.h; p.pitch = -0.05;
   ctx.net?.send?.('uber', { a: 'in', id: r.id, s: seat });
   if (mine && r.tg == null) { r.tg = Date.now() + DEPART * 1000; ctx.net?.send?.('uber', { a: 'go', id: r.id, tg: r.tg }); }
-  K.toast(`${r.drv[1] === 'ru' ? '«Привет! Пристегнись.»' : '«你好! Seat belt, please.»'} ${r.drv[0]} · to ${r.dest.name}. B drinks / smokes, shoot out of the windows`, 3200);
+  K.toast(`${r.drv[1] === 'ru' ? '«Привет! Пристегнись.»' : '«你好! Seat belt, please.»'} ${r.drv[0]} · to ${r.dest.name}. B drinks / smokes · O window · shoot out of the windows`, 3200);
   try { ctx.bus.emit('vrFace'); } catch {}
   showApp(true, false);
 }
@@ -472,6 +474,7 @@ function onKey(e) {
   const { ctx } = U; if (ctx.world !== U.W || ctx.state !== 'playing') return;
   if (U.picking) { const m = /^(Digit|Numpad)([1-5])$/.exec(e.code); if (m || e.code === 'Escape' || e.code === 'KeyU') { e.preventDefault(); e.stopImmediatePropagation(); if (e.repeat) return; if (m) request(DESTS[+m[2] - 1].id); else showApp(false); } return; }
   if (e.code === 'KeyU' && !e.repeat && !ctx.durakOpen && !document.querySelector('.hkui.dialog')) { e.preventDefault(); toggleApp(); }
+  if (e.code === 'KeyO' && U.seat >= 0 && !e.repeat) { U.winOpen = !U.winOpen; K.toast(U.winOpen ? 'Window down' : 'Window up', 900); }
 }
 function toggleApp() { if (!K.has('phone')) { K.toast('No phone on you', 1200); return; } if (U.el.style.display === 'none') showApp(true, !U.cur); else showApp(false); }
 /** show the card: picking a destination (pointer free for the buttons) or the trip status (doesn't take the mouse) */
@@ -540,7 +543,7 @@ function drawMap(r) {
 
 function qa() {
   return {
-    state: () => { const r = U.cur, p = U.ctx.player, st = r?.st; return { cash: K.cash, phone: K.has('phone'), open: U.el.style.display !== 'none', picking: !!U.picking, seat: U.seat, mounted: !!p.mounted?.uber, rides: U.rides.size,
+    state: () => { const r = U.cur, p = U.ctx.player, st = r?.st; return { cash: K.cash, phone: K.has('phone'), open: U.el.style.display !== 'none', picking: !!U.picking, seat: U.seat, mounted: !!p.mounted?.uber, rides: U.rides.size, winOpen: U.winOpen,
       cur: r ? { hold: [Math.round(r.hA), Math.round(r.hR), +r.hk.toFixed(2)], by: r.hBy ? [r.hBy.parked ? 'parked' : r.hBy.kind || (r.hBy.cop != null ? 'cop' : r.hBy.veh ? 'player' : 'x'), +r.hBy.x.toFixed(1), +r.hBy.z.toFixed(1), +(r.hBy.v || 0).toFixed(1)] : null, id: r.id, phase: st.phase, zone: st.zone, dest: r.dest.id, driver: r.drv[0], car: [+st.x.toFixed(1), +st.z.toFixed(1), +st.h.toFixed(2)], v: +st.v.toFixed(1), riders: [...r.riders.values()], tg: r.tg, approachT: +r.appr.T.toFixed(1), approachL: +r.appr.L.toFixed(0), legs: r.legs.map((l) => [l.z, +l.P.L.toFixed(0), +l.P.T.toFixed(1)]), driverModel: !!r.driver, avatar: r.driver?.avatar, lines: statusLines() } : null,
       eyeOverRoad: +(U.ctx.camera.position.y).toFixed(2), pos: p.position.toArray().map((v) => +v.toFixed(1)), ui: U.el.textContent }; },
     card: () => { const b = U.el.getBoundingClientRect(); return { mini: U.el.classList.contains('mini'), w: Math.round(b.width), h: Math.round(b.height), x: Math.round(b.x), y: Math.round(b.y), vw: innerWidth, vh: innerHeight }; }, tapCard: () => U.el.querySelector('.ub-body').click(),

@@ -14,7 +14,7 @@ const POKE_IN = 0.012, POKE_OUT = 0.025, HOVER_Z = 0.05, BACK_Z = -0.04;
 const MAP_HZ = 4, PALM_FACING = 0.55;
 const TABS = [['act', '⚡ ACT'], ['bag', '🎒 BAG'], ['guns', '🔫 GUNS'], ['map', '🗺 MAP'], ['uber', '🚕 UBER'], ['friends', '👥 CREW'], ['set', '⚙ SET'], ['help', '❔ HELP']];
 const ACTS = [['⤒ JUMP', 'Space'], ['💬 TALK · F', 'KeyF'], ['🔄 RELOAD', 'KeyR'], ['🧎 CROUCH', 'crouch'], ['💣 GRENADE', 'KeyG'], ['🚀 JET PACK', 'KeyX'],
-  ['📯 HORN', 'KeyQ'], ['📻 RADIO', 'KeyL'], ['⏭ NEXT SONG', 'Period'], ['🚽 TAKE A LEAK', 'KeyP'], ['☠ RESPAWN', 'KeyT'], ['⏸ PAUSE MENU', 'pause']];
+  ['📯 HORN', 'KeyQ'], ['📻 RADIO', 'KeyL'], ['⏭ NEXT SONG', 'Period'], ['🚽 TAKE A LEAK', 'KeyP'], ['🪟 CAR WINDOW', 'KeyO'], ['☠ RESPAWN', 'KeyT'], ['⏸ PAUSE MENU', 'pause']];
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _m = new THREE.Matrix4(), _ray = new THREE.Raycaster();
 
 export function createTablet(host) {

@@ -12,6 +12,8 @@ import * as THREE from 'three';
 import { carMaterials } from './world/carkit.js';
 
 const HP = 2500, SMOKE_AT = 1000, FIRE_AT = 375, FUSE = 4, WRECK_T = 60, HIT_MAX = 400, LIGHTS_AT = 300;
+const WIN_T = 0.3, WIN_DROP = 0.42;   // window roll: seconds to fully travel, metres it slides down into the door
+const DOOR_SWING = 0.5, DOOR_OPEN_T = 0.22, DOOR_HOLD_T = 0.35, DOOR_CLOSE_T = 0.45;   // a short hinge pulse on entry / exit
 const PANEL_HP = 260, HANG_AT = 0.45, BULLET_PANEL = 14, BULLET_HP = 12, PANE_CRACK = 1, PANE_SHATTER = 3, CRASH_PANE = 90;   // panel health, the fraction left when it hangs; a bullet's share; hits to crack / shatter a pane; crash damage that breaks glass near it
 const HOLES = 24, HOLES_LITE = 8, MAX_DEBRIS = 6, MAX_DEBRIS_LITE = 2, DEBRIS_T = 20, SHARDS = 120, SHARDS_PER = 14, PANEL_R = 1.25;   // decal / debris / shard caps; debris lifetime (s); crash reach to a panel's centre (m)
 let POOL = null, CHAR = null, DARK = null, HOLE_MAT = null, CRACK_MAT = null, SHARD_IM = null;
@@ -99,6 +101,47 @@ function detach(C, b, name) {
 }
 function dropDebris(d) { d.g.removeFromParent(); DEBRIS.splice(DEBRIS.indexOf(d), 1); }
 
+/** Roll a side window up/down (panes glassFL / glassFR / glassRL / glassRR). A shattered pane (#183) is already open and
+ *  can't be rolled either way. Returns the new target (0 up, 1 down) or null if that car has no such window. */
+export function toggleWindow(car, name) {
+  const P = car?.panes?.[name]; if (!P || P.state === 2) return null;
+  if (P.y0 == null) P.y0 = P.mesh.position.y;
+  P.winT = P.winT ? 0 : 1; return P.winT;
+}
+/** Is a window open enough to shoot or lean through: fully down, or already shattered. */
+export function windowOpen(car, name) {
+  const P = car?.panes?.[name]; if (!P) return true;   // no split panes (a merged/parked body): nothing to gate
+  return P.state === 2 || (P.win || 0) > 0.5;
+}
+/** A short hinge pulse on a door panel's pivot when someone gets in or out. A no-op once the door is hanging / off (#183). */
+export function swingDoor(car, name) {
+  const P = car?.panels?.[name]; if (!P || !name.startsWith('door') || P.state >= 2) return;
+  P.doorT = 0;
+}
+/** per frame, every car: ease window panes toward their rolled target, and run any door-swing pulse */
+function updateInterop(bikes, dt) {
+  for (const b of bikes) {
+    if (!b.spec?.car) continue;
+    if (b.panes) for (const P of Object.values(b.panes)) {
+      if (P.winT == null) continue;
+      if (P.y0 == null) P.y0 = P.mesh.position.y;
+      const cur = P.win || 0, d = P.winT - cur;
+      if (Math.abs(d) > 1e-4) P.win = Math.max(0, Math.min(1, cur + Math.sign(d) * Math.min(Math.abs(d), dt / WIN_T)));
+      P.mesh.position.y = P.y0 - WIN_DROP * (P.win || 0);
+    }
+    if (b.panels) for (const [n, P] of Object.entries(b.panels)) {
+      if (P.doorT == null) continue;
+      if (P.state >= 2) { P.doorT = null; continue; }   // it came off / is hanging: the crash animation owns the pivot now
+      P.doorT += dt; const sign = n.endsWith('R') ? 1 : -1; let k;
+      if (P.doorT < DOOR_OPEN_T) k = P.doorT / DOOR_OPEN_T;
+      else if (P.doorT < DOOR_OPEN_T + DOOR_HOLD_T) k = 1;
+      else if (P.doorT < DOOR_OPEN_T + DOOR_HOLD_T + DOOR_CLOSE_T) k = 1 - (P.doorT - DOOR_OPEN_T - DOOR_HOLD_T) / DOOR_CLOSE_T;
+      else { P.pivot.rotation.y = 0; P.doorT = null; continue; }
+      P.pivot.rotation.y = sign * DOOR_SWING * k;
+    }
+  }
+}
+
 /** a crash: speed lost in one frame. `at` (world point) / `dir` (world, the push into the car) when known. Returns the damage dealt. */
 export function damageHit(C, bike, drop, at = null, dir = null) {
   if (!bike?.spec?.car || bike.wrecked) return 0;
@@ -158,6 +201,7 @@ function charred(bike) {
 
 /** per frame for every hurt car: smoke, fire, the fuse, the wreck coming back; debris, shards and sparks */
 export function updateDamage(C, bikes, dt) {
+  updateInterop(bikes, dt);
   const scene = C.scene; let any = false;
   for (const b of bikes) {
     if (!b.spec?.car || b.hp == null || b.hp >= SMOKE_AT && b.fuse == null && !b.wrecked) continue; any = true;
@@ -194,6 +238,6 @@ function restore(b) {
 export const isWrecked = (b) => !!b?.wrecked;
 /** test hooks (qa): a car's damage at a glance */
 export function damageState(b) {
-  if (!b) return null; const pan = {}, pn = {}; for (const [n, P] of Object.entries(b.panels || {})) pan[n] = P.state; for (const [n, P] of Object.entries(b.panes || {})) pn[n] = P.down ? 'down' : P.state;
+  if (!b) return null; const pan = {}, pn = {}; for (const [n, P] of Object.entries(b.panels || {})) pan[n] = P.state; for (const [n, P] of Object.entries(b.panes || {})) pn[n] = P.state === 2 || (P.win || 0) > 0.5 ? 'down' : P.state;
   return { hp: b.hp ?? HP, panels: pan, panes: pn, holes: b.holes?.im.count || 0, debris: DEBRIS.length, shards: SHARD_LIST.length, lightsOut: !!b.lightsOut };
 }
