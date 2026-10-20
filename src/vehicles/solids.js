@@ -13,8 +13,13 @@ export function solidSource(name, fn) { SRC.set(name, fn); builtT = -1; }
 export function staticSolids(list) { STATIC.push(...list); staticGrid = null; }
 function bin(map, o) { const k = key(Math.floor(o.x / CELL), Math.floor(o.z / CELL)); let l = map.get(k); if (!l) map.set(k, (l = [])); l.push(o); }
 function build() {
-  const t = performance.now(); if (t - builtT < 4) return; builtT = t; grid.clear();
-  for (const fn of SRC.values()) { let L; try { L = fn(); } catch { continue; } if (L) for (const o of L) if (o && Number.isFinite(o.x)) bin(grid, o); }
+  const t = performance.now();
+  if (t - builtT >= 4) { builtT = t; grid.clear();
+    for (const fn of SRC.values()) { let L; try { L = fn(); } catch { continue; } if (L) for (const o of L) if (o && Number.isFinite(o.x)) bin(grid, o); } }
+  // staticGrid's own rebuild must not be gated by the dynamic-grid throttle above: staticSolids() can be called mid-frame
+  // right after a dynamic rebuild just ran (within the same 4 ms), and solidsNear() always reads both grids - if that early
+  // return above skipped this block too, staticGrid stayed null (it was just invalidated) and the very next query crashed
+  // reading .get off null. A source registered after the world has started (staticSolids mid-play) must still bin cleanly.
   if (!staticGrid) { staticGrid = new Map(); for (const o of STATIC) if (!o.gone) bin(staticGrid, o); }
 }
 const _near = [];

@@ -9,8 +9,9 @@
 // deck height comes from W.groundHeight (a wrapper that knows the viaduct). Passengers are carried with the driver.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { carGeometries, carMaterials, CAR_COLORS, wheelInstances, wheelLayout } from '../carkit.js';
+import { carGeometries, carMaterials, carSpec, CAR_COLORS, wheelInstances, wheelLayout } from '../carkit.js';
 import { hangkit as K } from '../hangkit.js';
+import { solidSource } from '../../vehicles/solids.js';
 
 export const ZONE = { x0: -2000, x1: 3400, z0: 11400, z1: 12700, oz: 12000 };   // world rect of the zone; local z = world z − oz
 const CX = 900, LS = 300, R = 72, DECK = 9;                                      // loop centre (local x), straight length, bend radius, deck height
@@ -155,7 +156,10 @@ export function buildBelt(world) {
   { const n = ctx.safeMode ? 4 : ctx.lite ? 8 : 16; for (let i = 0; i < n; i++) { const k = (i * 7) % 10, kind = k < 4 ? 'sedan' : k < 6 ? 'suv' : k < 8 ? 'cab' : 'van';
       Z.traffic.push({ kind, p: new THREE.Vector3(), lane: i % 3, s: (i * PER / n + (i % 3) * 23) % PER, v: 19 + (i % 5) * 2.4,
         color: kind === 'cab' ? new THREE.Color(i % 3 ? 0xf2b820 : 0x8cd04a) : kind === 'van' ? new THREE.Color(0xf2f2ee) : CAR_COLORS[(i * 5) % CAR_COLORS.length] }); }
-    Z.carIM = trafficMeshes(root, Z.traffic, !ctx.lite); }
+    Z.carIM = trafficMeshes(root, Z.traffic, !ctx.lite);
+    // #182 left the Belt out of the shared solids grid: the loop has its own lane-following avoidance (c.v vs. the gap
+    // ahead, above), but publish the cars too so anyone else's solids query (the Uber, a future AI driver up here) sees them
+    solidSource('belt', () => Z.traffic.filter((c) => !c.jacked).map((c) => { const K2 = carSpec(c.kind); return { x: c.p.x, z: c.p.z, h: c.yaw || 0, hl: K2.len / 2, hw: K2.w / 2, v: c.v }; })); }
 
   // ---- the on-ramp gantries on the street (W 8th St, Stillwell Ave, Brighton Beach Ave), and a pin on the map for each ----
   for (const r of RAMPS) { const { x, z, span } = r.g, along = span === 'x', tex = signTex(r.lines);

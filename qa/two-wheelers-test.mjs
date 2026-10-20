@@ -44,25 +44,70 @@ try {
   await page.waitForTimeout(500);
   const hasEbikes = await page.evaluate(async () => { const S = await import('/src/vehicles/solids.js'); const c = window.__ctx; const L = S.solidsNear(c.player.position.x, c.player.position.z, 400); return L.length; });
   check(hasEbikes >= 0, 'traffic solids queryable', hasEbikes);
+
+  // ---- 2a. solids.js's duplicate-entry fix: a source registered after the world has started (traffic already driving,
+  // builds already happening every few ms) must bin exactly once, right away, and track a move / a removal correctly ----
+  const dupCheck = await page.evaluate(async () => {
+    const S = await import('/src/vehicles/solids.js');
+    S.solidsNear(0, 0, 1);   // warm the dynamic grid so the next registration lands squarely inside the <4ms throttle window
+    const probe = { x: 90000, z: 90000, h: 0, hl: 1, hw: 1, v: 0 };
+    S.solidSource('__qaDupProbe', () => [probe]);
+    let threw = null, n0 = -1;
+    try { n0 = S.solidsNear(90000, 90000, 5).filter((o) => o === probe).length; } catch (e) { threw = e.message; }
+    S.staticSolids([{ x: 90010, z: 90010, h: 0, hl: 1, hw: 1, v: 0 }]);   // the same race via the static side
+    let staticThrew = null; try { S.solidsNear(90010, 90010, 5); } catch (e) { staticThrew = e.message; }
+    probe.x = 90005;
+    const n1 = S.solidsNear(90005, 90000, 5).filter((o) => o === probe).length;
+    probe.gone = true;
+    const n2 = S.solidsNear(90005, 90000, 5).filter((o) => o === probe).length;
+    return { threw, staticThrew, n0, n1, n2 };
+  });
+  console.log('solids duplicate-entry check', JSON.stringify(dupCheck));
+  check(!dupCheck.threw && !dupCheck.staticThrew, 'registering mid-play does not throw', JSON.stringify(dupCheck));
+  check(dupCheck.n0 === 1, 'a newly-registered source appears exactly once', dupCheck.n0);
+  check(dupCheck.n1 === 1, 'it still appears exactly once after moving', dupCheck.n1);
+  check(dupCheck.n2 === 0, 'it is gone once removed', dupCheck.n2);
+
+  // ---- 2b. a parked scooter and a parked dock e-bike dropped right in a live traffic lane: AI traffic must steer around
+  // them like any other solid, not drive through them ----
+  const planted = await page.evaluate(() => {
+    const c = window.__ctx, P = c.player.position;
+    const cars = (window.__game.traffic?.cars?.() || []).filter((ca) => ca.v > 2);
+    cars.sort((a, b) => Math.hypot(a.x - P.x, a.z - P.z) - Math.hypot(b.x - P.x, b.z - P.z));
+    const t = cars[0]; if (!t) return { error: 'no moving traffic car nearby' };
+    const fx = -Math.sin(t.h), fz = -Math.cos(t.h);
+    const scooter = c.vehicles.qaSpawnScooter(t.x + fx * 16, t.z + fz * 16, t.h + Math.PI / 2, 'kick', t.y ?? P.y);
+    const ebike = c.vehicles.qaSpawnEbike(t.x + fx * 26, t.z + fz * 26, t.h + Math.PI / 2, 'citibike', t.y ?? P.y);
+    window.__plant = { scooter: { x: scooter.pos.x, z: scooter.pos.z }, ebike: { x: ebike.pos.x, z: ebike.pos.z } };
+    return window.__plant;
+  });
+  check(!planted.error, 'found a moving traffic car to plant two-wheelers in front of', JSON.stringify(planted));
+
   await page.evaluate(async () => {
     const S = await import('/src/vehicles/solids.js'); const IN = 0.1;
-    window.__ov = { samples: 0, hits: 0, seenEbike: false, log: [] };
+    window.__ov = { samples: 0, hits: 0, seenEbike: false, plantedSamples: 0, plantedHits: 0, log: [] };
     window.__ovTimer = setInterval(() => {
-      const c = window.__ctx, P = c.player.position, O = window.__ov; O.samples++;
+      const c = window.__ctx, P = c.player.position, O = window.__ov, pl = window.__plant; O.samples++;
       const L = S.solidsNear(P.x, P.z, 300).filter((o) => !o.gone);
       if (L.some((o) => o.variant)) O.seenEbike = true;
       for (let a = 0; a < L.length; a++) for (let b = a + 1; b < L.length; b++) {
         const A = L[a], B = L[b]; if (Math.abs(A.x - B.x) > 14 || Math.abs(A.z - B.z) > 14) continue;
-        if (S.obbOverlap(A.x, A.z, A.h, A.hl - IN, A.hw - IN, { x: B.x, z: B.z, h: B.h, hl: B.hl - IN, hw: B.hw - IN })) { O.hits++; if (O.log.length < 20) O.log.push(`${A.variant || A.kind || 'veh'}@${A.x.toFixed(1)},${A.z.toFixed(1)} + ${B.variant || B.kind || 'veh'}@${B.x.toFixed(1)},${B.z.toFixed(1)}`); }
+        if (S.obbOverlap(A.x, A.z, A.h, A.hl - IN, A.hw - IN, { x: B.x, z: B.z, h: B.h, hl: B.hl - IN, hw: B.hw - IN })) {
+          O.hits++; if (O.log.length < 20) O.log.push(`${A.variant || A.kind || 'veh'}@${A.x.toFixed(1)},${A.z.toFixed(1)} + ${B.variant || B.kind || 'veh'}@${B.x.toFixed(1)},${B.z.toFixed(1)}`);
+          if (pl) for (const [who, p] of [['scooter', pl.scooter], ['ebike', pl.ebike]]) { if (Math.hypot(A.x - p.x, A.z - p.z) < 0.4 || Math.hypot(B.x - p.x, B.z - p.z) < 0.4) O.plantedHits++; }
+        }
       }
+      if (pl && L.some((o) => Math.hypot(o.x - pl.scooter.x, o.z - pl.scooter.z) < 0.4 || Math.hypot(o.x - pl.ebike.x, o.z - pl.ebike.z) < 0.4)) O.plantedSamples++;
     }, 150);
   });
   await sleep(60000);
   const ov = await page.evaluate(() => { clearInterval(window.__ovTimer); return window.__ov; });
-  console.log('ebike traffic overlap sample', JSON.stringify({ samples: ov.samples, hits: ov.hits, seenEbike: ov.seenEbike }));
+  console.log('ebike traffic overlap sample', JSON.stringify(ov));
   check(ov.samples > 300, `sampled solids for 60 s (${ov.samples})`);
   check(ov.seenEbike, 'an e-bike was in range of the sampler');
   check(ov.hits === 0, 'zero overlaps involving an e-bike in traffic', ov.hits ? ov.log.slice(0, 6).join(' | ') : '');
+  check(!planted.error ? ov.plantedSamples > 300 : true, 'the planted scooter/e-bike stayed in range for the full 60 s', ov.plantedSamples);
+  check(ov.plantedHits === 0, 'zero AI overlaps with the planted parked scooter/e-bike', ov.plantedHits);
 
   // ---- 3. a motorcycle into a car: both damaged, the rider thrown ----
   // mount + inject speed directly (api.mount doesn't check proximity) rather than driving blind over unknown local terrain:
