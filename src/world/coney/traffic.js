@@ -24,8 +24,7 @@ import { BoxGrid, rectBlocked } from '../../vehicles/collide.js';
 import { hangkit as HK } from '../hangkit.js';
 import { adoptFolk, folkFlee } from './chill.js';
 import { buildBus, BUS } from '../../vehicles/bus.js';
-import { buildEbike } from '../../vehicles/ebike.js';
-import { buildRider } from '../../vehicles/bike.js';
+import { buildEbike, buildCyclist } from '../../vehicles/ebike.js';
 import { solidSource, staticSolids, solidsNear, solidAhead, moveBlocked, obbOverlap } from '../../vehicles/solids.js';
 
 const RM = 8;                    // max corner radius (m)
@@ -380,7 +379,7 @@ function buildEbikeTraffic(world) {
       r = cand;
     }
     if (!r) continue;
-    const variant = i % 2 ? 'delivery' : 'citibike', parts = buildEbike(ctx, variant), rider = buildRider(); parts.body.add(rider); rider.visible = true;
+    const variant = i % 2 ? 'delivery' : 'citibike', parts = buildEbike(ctx, variant), rider = buildCyclist(variant); parts.body.add(rider); rider.visible = true;
     world.scene.add(parts.group);
     r.parts = parts; r.variant = variant; list.push(r);
   }

@@ -8,8 +8,8 @@
 import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState, toggleWindow, windowOpen, swingDoor, qaSmokeActive } from './vehicledamage.js';
 import * as THREE from 'three';
 import { buildBike, buildRider, WHEEL_R, WHEELBASE, FRONT_Z, REAR_Z } from './vehicles/bike.js';
-import { buildEbike } from './vehicles/ebike.js';
-import { buildScooter, buildStandingRider } from './vehicles/scooter.js';
+import { buildEbike, buildCyclist } from './vehicles/ebike.js';
+import { buildScooter, buildStandingRider, buildMopedRider } from './vehicles/scooter.js';
 import { buildJetski } from './vehicles/jetski.js';
 import { createWaterFX } from './vehicles/waterfx.js';
 import { BoxGrid, resolveCircle, rectBlocked, segmentHit } from './vehicles/collide.js';
@@ -860,7 +860,7 @@ function applyChase(v, dt) {
 function setChase(on) {
   S.chase = !!on;
   const v = S.mounted;
-  if (v) { S.chaseYaw = v.heading; S.chaseY = v.pos.y; S.chaseD = v.spec.chaseD; if (S.chase && !v.spec.car && !v.rider) { v.rider = v.spec.kind === 'scooter_kick' ? buildStandingRider() : buildRider(); v.body.add(v.rider); if (v.spec.water) v.rider.position.set(0, -0.22, 0.12); } }
+  if (v) { S.chaseYaw = v.heading; S.chaseY = v.pos.y; S.chaseD = v.spec.chaseD; if (S.chase && !v.spec.car && !v.rider) { v.rider = v.spec.kind === 'scooter_kick' ? buildStandingRider() : v.spec.kind === 'scooter_moped' ? buildMopedRider() : v.spec.kind.startsWith('ebike_') ? buildCyclist(v.variant) : buildRider(); v.body.add(v.rider); if (v.spec.water) v.rider.position.set(0, -0.22, 0.12); } }
   S.lookYaw = 0; S.lookPitch = 0;
   if (S.ui) S.ui.cam.classList.toggle('on', S.chase);
   return S.chase;
