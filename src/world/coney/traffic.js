@@ -24,7 +24,9 @@ import { BoxGrid, rectBlocked } from '../../vehicles/collide.js';
 import { hangkit as HK } from '../hangkit.js';
 import { adoptFolk, folkFlee } from './chill.js';
 import { buildBus, BUS } from '../../vehicles/bus.js';
-import { solidSource, staticSolids, solidsNear, moveBlocked, obbOverlap } from '../../vehicles/solids.js';
+import { buildEbike } from '../../vehicles/ebike.js';
+import { buildRider } from '../../vehicles/bike.js';
+import { solidSource, staticSolids, solidsNear, solidAhead, moveBlocked, obbOverlap } from '../../vehicles/solids.js';
 
 const RM = 8;                    // max corner radius (m)
 const CYC = 34;                  // signal cycle (s): A green 0-14, amber 14-17, all red 17-18, B green 18-30, amber 30-33, all red
@@ -346,12 +348,75 @@ export function buildTraffic(world) {
   T.spotPos = new THREE.Vector3(0, -999, 0);
   try { HK.spot({ pos: T.spotPos, r: 1.9, dy: 1.6, when: () => !!T.jackable, prompt: () => (T.jackable?.driver && T.jackable.state !== 'dead' ? 'F — CARJACK' : 'F — DRIVE'), act: () => { if (T.jackable) jack(T.jackable); } }); } catch (e) { console.warn('[traffic] spot', e?.message || e); }
   try { buildBuses(world); } catch (e) { console.warn('[traffic] buses', e); }
+  try { buildEbikeTraffic(world); } catch (e) { console.warn('[traffic] ebikes', e); }
   world.updaters.push((dt) => { try { update(dt); } catch (e) { if ((T.errN = (T.errN || 0) + 1) < 4) console.error('[traffic]', e); } });
   solidSource('traffic', () => T.cars.filter((c) => c.active));
   solidSource('player', playerSolids);
   if (typeof window !== 'undefined' && window.__game) window.__game.traffic = trafficQA;
   W.traffic = { cars: () => T.cars.filter((c) => c.active), graph: () => T.G, recycle: (c) => { if (T.cars.includes(c) && c.active && !c.bus) despawn(c); } };   // graph: the validated lanes (coney/uber.js routes on them)
   return T;
+}
+
+// =========================================================================================================================
+// e-bike AI riders: decorative two-wheelers that keep to the kerb lane (laneOff + a bit further out, past the kerb cars),
+// riding one road segment back and forth at an easy pace, braking for whoever's ahead (solids.js). Registered as solids
+// ('ebikes') so the player, traffic cars and each other never overlap them. Not carjackable (a parked dock bike is - see
+// vehicles.js makeEbike/placeEbikes); these are ambient AI only.
+const EBIKE_LANE_PAD = 1.35;   // m further out from the car lane centreline than laneOff(w,0): the kerb-side bike lane
+function buildEbikeTraffic(world) {
+  const { ctx } = world; if (!T?.G?.segs?.length) return;
+  const n = ctx.lite ? 3 : 7, G = T.G, rng = mulberry(hash(90017, 3));
+  const list = [];
+  for (let i = 0; i < n; i++) {
+    let r = null;
+    for (let k = 0; k < 24 && !r; k++) {
+      const s = G.segs[(rng() * G.segs.length) | 0]; if (s.len <= 24) continue;
+      const cand = { A: s.a, B: s.b, off: laneOff(s.w, 0) + EBIKE_LANE_PAD, t: rng(), dir: rng() < 0.5 ? 1 : -1, top: 3 + rng() * 1.8, x: 0, z: 0, y: 0, h: 0, hl: 0.95, hw: 0.35, v: 0 };
+      const p = ebikePose(cand, G, cand.t, cand.dir); cand.x = p.x; cand.z = p.z; cand.h = p.h;
+      // parked cars aren't registered as solids (ownerOf/promote tracks them separately): check them directly, same as a
+      // regular traffic car's spawn() does for its own lane - a bike lane that's actually a row of parked cars is a bug, not traffic
+      if (parkedNear(world, cand.x, cand.z, 2.0)) continue;
+      if (solidsNear(cand.x, cand.z, 6).some((o) => obbOverlap(cand.x, cand.z, cand.h, cand.hl, cand.hw, o))) continue;
+      r = cand;
+    }
+    if (!r) continue;
+    const variant = i % 2 ? 'delivery' : 'citibike', parts = buildEbike(ctx, variant), rider = buildRider(); parts.body.add(rider); rider.visible = true;
+    world.scene.add(parts.group);
+    r.parts = parts; r.variant = variant; list.push(r);
+  }
+  if (!list.length) return;
+  T.ebikes = list;
+  world.updaters.push((dt) => { try { updateEbikes(dt, G, world); } catch (e) { if ((T.ebikeErrN = (T.ebikeErrN || 0) + 1) < 4) console.error('[traffic] ebikes', e); } });
+  solidSource('ebikes', () => T.ebikes);
+}
+/** any (not gone) parked car within `r` of (x, z): parked cars aren't in solids.js (they're only tracked via vehicles.js's
+ *  ownerOf/promote once hit), so traffic that must avoid them - like an e-bike's kerb lane - has to check world.parkedCars itself */
+function parkedNear(world, x, z, r) {
+  for (const c of world.parkedCars || []) { if (c.gone) continue; if (Math.hypot(c.x - x, c.z - z) < r + (carSpec(c.kind)?.w || 1.8) / 2) return true; }
+  return false;
+}
+/** rider `r`'s pose at progress `t` (0 = node A, 1 = node B) and direction, offset to the kerb side of the lane. Pure (doesn't
+ *  touch `r`) so the caller can check a candidate pose against the solids grid before committing to it. */
+function ebikePose(r, G, t, dir) {
+  const A = G.nodes[r.A], B = G.nodes[r.B], L = Math.max(0.5, Math.hypot(B.x - A.x, B.z - A.z));
+  const dx = (B.x - A.x) / L, dz = (B.z - A.z) / L, fx = dir > 0 ? dx : -dx, fz = dir > 0 ? dz : -dz, nx = -dz, nz = dx;
+  const s = t * L; return { x: A.x + dx * s + nx * r.off, z: A.z + dz * s + nz * r.off, h: Math.atan2(-fx, -fz), L };
+}
+function updateEbikes(dt, G, world) {
+  for (const r of T.ebikes) {
+    const ahead = solidAhead(r, r.x, r.z, r.h, r.hl, r.hw, 9, 0.4);
+    const want = ahead.o ? Math.max(0, Math.min(r.top, ahead.gap * 0.8)) : r.top;
+    r.v = damp(r.v, want, 4, dt);
+    const { L } = ebikePose(r, G, r.t, r.dir);
+    const nt = clamp(r.t + r.dir * r.v * dt / L, 0, 1), cand = ebikePose(r, G, nt, r.dir);
+    // #182's shared grid: never move somewhere that overlaps a solid we don't already overlap (a parked car sitting on the
+    // kerb line is the usual case) - braking on solidAhead handles the common case smoothly, this is the hard backstop
+    if (!moveBlocked(r, cand.x, cand.z, cand.h, r.hl, r.hw) && !parkedNear(world, cand.x, cand.z, 0.3)) {
+      r.t = nt; r.x = cand.x; r.z = cand.z; r.h = cand.h; if (nt === 1 || nt === 0) r.dir = -r.dir;
+    } else r.v = 0;
+    r.y = T.W.groundHeight?.(r.x, r.z) ?? 0;
+    r.parts.group.position.set(r.x, r.y, r.z); r.parts.group.rotation.y = r.h;
+  }
 }
 
 // =========================================================================================================================

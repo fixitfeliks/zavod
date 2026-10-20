@@ -138,15 +138,15 @@ export function buildBike(ctx) {
   const tail = mk(G.tail, M.tail, body); tail.position.set(0, 0.80, 0.865); tail.castShadow = false;
   // rear wheel
   const wheelR = new THREE.Group(); wheelR.position.set(0, WHEEL_R, REAR_Z); body.add(wheelR);
-  mk(G.tyre, M.rubber, wheelR); mk(G.wheelChrome, M.chrome, wheelR);
+  mk(G.tyre, M.rubber, wheelR).userData.noDent = true; mk(G.wheelChrome, M.chrome, wheelR).userData.noDent = true;
   // fork assembly pivots at the steering head (raked)
   const PIV = new THREE.Vector3(0, 0.9, -0.08);
   const fork = new THREE.Group(); fork.position.copy(PIV); body.add(fork);       // steering pivot (rotate fork.rotation.y)
   const fi = new THREE.Group(); fi.position.copy(PIV).negate(); fork.add(fi);
   mk(G.forkPaint, M.paint, fi); mk(G.forkChrome, M.chrome, fi); mk(G.forkRubber, M.trim, fi);
-  const lens = mk(G.lens, M.lens.clone(), fi); lens.position.set(0, 0.86, -0.545); lens.rotation.y = Math.PI; lens.castShadow = false;
+  const lens = mk(G.lens, M.lens.clone(), fi); lens.position.set(0, 0.86, -0.545); lens.rotation.y = Math.PI; lens.castShadow = false; lens.userData.noDent = true;
   const wheelF = new THREE.Group(); wheelF.position.set(0, WHEEL_R, FRONT_Z); fi.add(wheelF);
-  mk(G.tyre, M.rubber, wheelF); mk(G.wheelChrome, M.chrome, wheelF);
+  mk(G.tyre, M.rubber, wheelF).userData.noDent = true; mk(G.wheelChrome, M.chrome, wheelF).userData.noDent = true;
   // headlight (only on while mounted)
   const headlight = new THREE.SpotLight(0xfff1cf, 0, 45, 0.48, 0.55, 1.2);
   headlight.position.set(0, 0.86, -0.56); headlight.target.position.set(0, 0.35, -12); headlight.castShadow = false; headlight.visible = false;

@@ -12,6 +12,10 @@ import * as THREE from 'three';
 import { carMaterials } from './world/carkit.js';
 
 const HP = 2500, SMOKE_AT = 1000, FIRE_AT = 375, FUSE = 4, WRECK_T = 60, HIT_MAX = 400, LIGHTS_AT = 300;
+const BIKE_HP = 900;   // a motorcycle/e-bike's own hp (cars use HP above): high enough that one hard hit (capped at HIT_MAX) damages
+// and smokes it without instantly maxing the fuse/explosion path that vehicledamage.js already runs for a wrecked car
+// smoke/fire/lights fire at the same fractions of whichever max applies
+const SMOKE_FRAC = SMOKE_AT / HP, FIRE_FRAC = FIRE_AT / HP, LIGHTS_FRAC = LIGHTS_AT / HP;
 const WIN_T = 0.3, WIN_DROP = 0.42;   // window roll: seconds to fully travel, metres it slides down into the door
 const DOOR_SWING = 0.5, DOOR_OPEN_T = 0.22, DOOR_HOLD_T = 0.35, DOOR_CLOSE_T = 0.45;   // a short hinge pulse on entry / exit
 const PANEL_HP = 260, HANG_AT = 0.45, BULLET_PANEL = 14, BULLET_HP = 12, PANE_CRACK = 1, PANE_SHATTER = 3, CRASH_PANE = 90;   // panel health, the fraction left when it hangs; a bullet's share; hits to crack / shatter a pane; crash damage that breaks glass near it
@@ -142,10 +146,11 @@ function updateInterop(bikes, dt) {
   }
 }
 
-/** a crash: speed lost in one frame. `at` (world point) / `dir` (world, the push into the car) when known. Returns the damage dealt. */
+/** a crash: speed lost in one frame. `at` (world point) / `dir` (world, the push into the car) when known. Returns the damage dealt.
+ *  Cars and bikes (motorcycles, e-bikes) share this: a bike just has a lower hp pool (BIKE_HP) and no panels/panes. */
 export function damageHit(C, bike, drop, at = null, dir = null) {
-  if (!bike?.spec?.car || bike.wrecked) return 0;
-  if (bike.hp == null) bike.hp = HP;
+  if (!bike || bike.wrecked) return 0;
+  if (bike.hp == null) bike.hp = bike.hp0 = bike.spec?.car ? HP : BIKE_HP;
   const dmg = Math.min(HIT_MAX, 6 * drop * drop); bike.hp = Math.max(0, bike.hp - dmg);
   const g = ends(bike), inv = new THREE.Matrix4().copy((bike.kit || g).matrixWorld).invert();
   // where it hit, in the kit frame (+x front): the given point, else the end that was leading
@@ -156,7 +161,7 @@ export function damageHit(C, bike, drop, at = null, dir = null) {
   if (!lite(C)) dent(bike, local, push, Math.min(0.18, drop * 0.012));
   for (const [n, P] of Object.entries(bike.panels || {})) { const d = P.ctr.distanceTo(local); if (d < PANEL_R) hitPanel(C, bike, n, dmg * (1.6 - d / PANEL_R)); }
   if (dmg > CRASH_PANE) for (const [n, P] of Object.entries(bike.panes || {})) if (P.ctr.distanceTo(local) < PANEL_R) hitPane(C, bike, n, dmg > HIT_MAX * 0.7 ? PANE_SHATTER : 1);
-  if ((front ? bike.dmgF : bike.dmgR) > LIGHTS_AT) lightsOut(bike, front);
+  if ((front ? bike.dmgF : bike.dmgR) > (bike.hp0 ?? HP) * LIGHTS_FRAC) lightsOut(bike, front);
   if (bike.hp <= 0 && bike.fuse == null) { bike.fuse = FUSE; C.hud?.toast?.('It\'s going to blow - get out!', 2200); }
   return dmg;
 }
@@ -204,10 +209,12 @@ export function updateDamage(C, bikes, dt) {
   updateInterop(bikes, dt);
   const scene = C.scene; let any = false;
   for (const b of bikes) {
-    if (!b.spec?.car || b.hp == null || b.hp >= SMOKE_AT && b.fuse == null && !b.wrecked) continue; any = true;
-    const g = ends(b), hood = new THREE.Vector3(1.6, 1.1, 0).applyMatrix4((b.kit || g).matrixWorld);
+    const max0 = b.hp0 ?? HP, smokeAt = max0 * SMOKE_FRAC, fireAt = max0 * FIRE_FRAC;
+    if (b.hp == null || b.hp >= smokeAt && b.fuse == null && !b.wrecked) continue; any = true;
+    const g = ends(b), hoodLocal = b.spec?.car ? new THREE.Vector3(1.6, 1.1, 0) : new THREE.Vector3(0, 1, -0.3);
+    const hood = hoodLocal.applyMatrix4((b.kit || g).matrixWorld);
     b.smokeT = (b.smokeT || 0) - dt;
-    if (b.smokeT <= 0) { b.smokeT = b.wrecked ? 0.5 : 0.25; puff(scene, hood, b.hp < FIRE_AT ? 'black' : 'white'); if (b.hp < FIRE_AT && !b.wreckDone) puff(scene, hood.clone().add(new THREE.Vector3(0, -0.2, 0)), 'fire'); }
+    if (b.smokeT <= 0) { b.smokeT = b.wrecked ? 0.5 : 0.25; puff(scene, hood, b.hp < fireAt ? 'black' : 'white'); if (b.hp < fireAt && !b.wreckDone) puff(scene, hood.clone().add(new THREE.Vector3(0, -0.2, 0)), 'fire'); }
     if (b.fuse != null && !b.wrecked) { b.fuse -= dt; if (b.fuse <= 0) {
       b.wrecked = true; b.wreckT = WRECK_T; b.fuse = null; charred(b); try { C.bus.emit('explosion', { position: b.pos.clone().setY(1), radius: 6 }); } catch {}
       for (let k = 0; k < 6; k++) puff(scene, hood.clone().add(new THREE.Vector3((Math.random() - 0.5) * 2, Math.random(), (Math.random() - 0.5) * 2)), 'fire');

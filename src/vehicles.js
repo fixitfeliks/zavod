@@ -8,6 +8,7 @@
 import { damageHit, damageShot, crashFx, updateDamage, isWrecked, damageState, toggleWindow, windowOpen, swingDoor } from './vehicledamage.js';
 import * as THREE from 'three';
 import { buildBike, buildRider, WHEEL_R, WHEELBASE, FRONT_Z, REAR_Z } from './vehicles/bike.js';
+import { buildEbike } from './vehicles/ebike.js';
 import { buildJetski } from './vehicles/jetski.js';
 import { createWaterFX } from './vehicles/waterfx.js';
 import { BoxGrid, resolveCircle, rectBlocked, segmentHit } from './vehicles/collide.js';
@@ -21,6 +22,7 @@ const VR_LEAN_MAX = 5 * DEG;   // VR: the bike you sit on (and the bars in your 
 const CAM_PROBE = 0.4, TOUCH_CRUISE = 0.45;
 const CHASE_DIP_ACC = 10, CHASE_DIP_H = 0.15, CHASE_DIP_LOOK = 0.4;   // chase cam: nose-down dip on hard braking, a lift on launch (m per 10 m/s^2 of aLong, capped)   // chase cam side-ray half spacing (m); car throttle while steering on the stick
 const FOV_KICK = 9, BOUNCE = 0.28, HIT_LOSS = 0.55, GRAV = 17, MAX_STEP = 1 / 120;
+const BIKE_EJECT_VN = 8;   // m/s closing speed into a crash that throws the rider off a motorcycle / e-bike
 // ---- per-vehicle handling + rider geometry ----
 // accel: launch acceleration (v = max·tanh(a·t/max)); brake/hard: service brake / handbrake decel; grip: lateral slip decay /s
 // (hardGrip while the handbrake is on); latG: cornering limit in g (caps steering angle with speed); circles: collision circles
@@ -32,6 +34,16 @@ const BIKE_SPEC = {
   eyeH: 1.43, eyeBack: 0.34, eyeSide: 0, reach: 1.2, hx: 0.45, hz: 1.05, boxH: 1.1, lookYaw: 60 * DEG,
   chaseD: 4.4, chaseH: 0.32, chaseLook: 1.45, hitMul: 8, hitSlow: 0.75, engineBrake: 0.6,
 };
+// e-bikes (delivery cargo bike / Citi Bike-style): the same arcade single-track model as BIKE_SPEC, tuned down (lower top
+// speed + gentler accel, a real throttle-limited e-bike, not a motorcycle) and lighter still (mass < MASS_BIKE below).
+const EBIKE_BASE = {
+  car: false, kind: 'ebike', max: 11, revMax: 3, accel: 5, brake: 8, hard: 10, hardYaw: 0.7, grip: 14, hardGrip: 5, latG: 1.1, steerLow: 0.5,
+  wheelbase: 1.15, circles: [-0.58, 0.58], bodyR: 0.36, band: 0.45, stepUp: 0.4, h: 1.05, leanK: 0.9,
+  eyeH: 1.28, eyeBack: 0.28, eyeSide: 0, reach: 1.1, hx: 0.4, hz: 0.9, boxH: 1.0, lookYaw: 60 * DEG,
+  chaseD: 4.0, chaseH: 0.3, chaseLook: 1.3, hitMul: 5, hitSlow: 0.8, engineBrake: 0.8, mass: 120,
+};
+const EBIKE_CITI_SPEC = { ...EBIKE_BASE, kind: 'ebike_citi' };
+const EBIKE_DELIVERY_SPEC = { ...EBIKE_BASE, kind: 'ebike_delivery', max: 10, accel: 4.3, mass: 150 };
 // jet ski: bike-style lean + throttle + Space charge-jump, but floats on the ocean's waveHeight (buoyancy spring), jet-thrust
 // steering (little bite off the throttle), slides like a boat, stalls when the intake runs out of water (beached).
 const JETSKI_SPEC = {
@@ -107,6 +119,19 @@ function makeBike(x, z, yaw, yRef = 0) {
   for (const m of bike.meshes) { m.userData.vehicle = bike; C.raycastTargets.push(m); }
   C.scene.add(bike.group);
   parkBox(bike); C.colliders.push(bike.box);
+  S.bikes.push(bike);
+  return bike;
+}
+/** A stealable e-bike parked at (x, z): a Citi Bike-style dock bike or a delivery cargo bike. Rides through the same
+ *  spec-driven physics as a motorcycle (mount()/dismount()/stepVeh don't care which non-car spec they're driving). */
+function makeEbike(x, z, yaw, variant = 'citibike', yRef = 0) {
+  const parts = buildEbike(C, variant), spec = variant === 'delivery' ? EBIKE_DELIVERY_SPEC : EBIKE_CITI_SPEC;
+  const bike = { ...parts, ...baseState(x, z, yaw, yRef), spec, mass: spec.mass, rider: null };
+  bike.group.position.copy(bike.pos); bike.group.rotation.y = yaw;
+  for (const m of bike.meshes) { m.userData.vehicle = bike; C.raycastTargets.push(m); }
+  C.scene.add(bike.group);
+  parkBox(bike);   // not pushed into C.colliders: a small parked dock bike, dropped near a spawn, shouldn't ever block the map's
+  // broader pathing/placement checks (OSM footpaths, patrol routes) - other vehicles can roll through a parked one, same as before it existed
   S.bikes.push(bike);
   return bike;
 }
@@ -222,7 +247,7 @@ function spotFree(x, z, yRef = 0, ignoreBox = null) {
 function placeBikes() {
   const W = C.world; S.grid.build(C.colliders);
   const spots = Array.isArray(W?.vehicleSpots) ? W.vehicleSpots : null;
-  if (spots && spots.length) { for (const s of spots.slice(0, W.vehicleMax || 5)) makeBike(s.x, s.z, s.yaw ?? 0, s.y ?? 0); if (S.bikes.length >= 3) return placeJetskis(); }   // maps may raise the cap via W.vehicleMax
+  if (spots && spots.length) { for (const s of spots.slice(0, W.vehicleMax || 5)) makeBike(s.x, s.z, s.yaw ?? 0, s.y ?? 0); if (S.bikes.length >= 3) return placeExtras(); }   // maps may raise the cap via W.vehicleMax
   const spawns = (W?.playerSpawns?.length ? W.playerSpawns : [new THREE.Vector3(0, 0, 0)]);
   const want = 5, R = C.rng, MIN_APART = 25;
   // candidates = every walkable anchor the map exposes (player spawns, enemy spawns, cover points) → bikes dispersed over the whole map
@@ -237,7 +262,22 @@ function placeBikes() {
     if (!best) break; pool.splice(pool.indexOf(best), 1); if (bd < MIN_APART) continue; tryAt(best.x, best.z, best.y);
   }
   for (let d = 3; S.bikes.length < 3 && d < 30; d += 1.5) for (let i = 0; i < 16 && S.bikes.length < 3; i++) { const a = i / 16 * Math.PI * 2; const x = s0.x + Math.cos(a) * d, z = s0.z + Math.sin(a) * d; if (spotFree(x, z, s0.y)) makeBike(x, z, a, s0.y || 0); }
-  placeJetskis();
+  placeExtras();
+}
+function placeExtras() { placeJetskis(); placeEbikes(); }
+/** A couple of stealable e-bikes dropped near the player's spawn (a Citi Bike-style dock bike, a delivery cargo bike):
+ *  cheap decoration + one more vehicle to steal, not tied to any particular map's vehicleSpots. */
+function placeEbikes() {
+  const W = C.world; if (W?.mapId !== 'coney') return;   // dock e-bikes are a NYC/Coney thing; other maps keep their plain motorcycle count
+  const spawns = (W?.playerSpawns?.length ? W.playerSpawns : [new THREE.Vector3(0, 0, 0)]);
+  const R = C.rng || Math.random, s0 = spawns[Math.floor(R() * spawns.length)];
+  for (const [variant, n] of [['citibike', 2], ['delivery', 1]]) for (let i = 0; i < n; i++) {
+    for (let k = 0; k < 16; k++) {
+      const a = R() * Math.PI * 2, d = 4 + R() * 10, x = s0.x + Math.cos(a) * d, z = s0.z + Math.sin(a) * d;
+      if (!spotFree(x, z, s0.y || 0)) continue;
+      makeEbike(x, z, a, variant, s0.y || 0); break;
+    }
+  }
 }
 
 function placeJetskis() { const L = C.world?.jetskiSpots; if (!C.world?.ocean || !Array.isArray(L)) return; L.forEach((s, i) => makeJetski(s.x, s.z, s.yaw ?? Math.PI, i)); }
@@ -297,7 +337,8 @@ function dismount() {
     }
   }
   if (sp.car) swingDoor(bike, driverDoor(bike));   // a short hinge pulse as you get out
-  p.mounted = null; S.mounted = null; S.qa = null;
+  p.mounted = null; S.mounted = null;
+  if (S.qa) { const q = S.qa; S.qa = null; q.res(false); }   // a crash can force a dismount mid qaDrive (bikeCrash → ejectRider): resolve it, don't hang the caller
   bike.vel.set(0, 0, 0); bike.speed = bike.fwdSpeed = 0; bike.throttle = 0; bike.vy = 0; bike.air = false; bike.parked = true;
   setRaycastable(bike, true);
   bike.headlight.visible = false; bike.headlight.intensity = 0; bike.lens.material.emissiveIntensity = sp.car ? 0.05 : 0.15; if (bike.lampR) bike.lampR.emissiveIntensity = 0.08;
@@ -415,6 +456,23 @@ function onPlayerShot(e) {
   const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : d.clone().negate(); if (n.dot(d) > 0) n.negate();
   damageShot(C, car, h.object, h.point, n, d, C.weapons?.spec?.damage ?? 30);
 }
+/** a mounted motorcycle / e-bike crashed into a car or a wall: its own damage + smoke (vehicledamage.js, BIKE_HP), crunch/sparks,
+ *  and on a hard enough hit the rider is thrown clear (dismount + a knockback that feeds the player's own fall-damage path). */
+function bikeCrash(v, hitN, vn, severity, hitCar) {
+  const at = new THREE.Vector3(hitN.px, v.pos.y + 0.55, hitN.pz);
+  if (severity > 0.12) { crunch(v, at, severity); try { damageHit(C, v, -vn, at, new THREE.Vector3(hitN.nx, 0, hitN.nz)); } catch (e) { console.warn('[vehicles] bike damage', e); } }
+  if (hitCar && -vn > BIKE_EJECT_VN) ejectRider(v, hitN.nx, hitN.nz, -vn);   // thrown off hitting a car, not every wall clip
+}
+/** throws the rider off a crashing bike: a normal dismount (safe spot found beside it), then a knockback velocity so the
+ *  player's own gravity + landing fall-damage (player.js) does the rest - no separate ragdoll needed. */
+function ejectRider(v, nx, nz, speed) {
+  if (v !== S.mounted) return; const p = C.player; if (!p) return;
+  dismount();
+  const k = clamp(speed * 0.55, 4, 14);
+  p.velocity.set(nx * k, Math.max(4, k * 0.4), nz * k); p.onGround = false;
+  try { C.hud?.toast?.('THROWN OFF', 1600); } catch {}
+  try { C.audio?.play?.('impact', { position: v.pos, volume: 1 }); } catch {}
+}
 function simulate(v, dt, thr, brk, hard, steer) {
   const n = Math.max(1, Math.ceil(dt / MAX_STEP - 1e-6)), h = dt / n;
   v.surfT -= dt; if (v.surfT <= 0) { v.surfT = 0.1; v.surf = surfaceUnder(v); }
@@ -484,8 +542,10 @@ function stepVeh(v, dt, thr, brk, hard, steer) {
       }
       v.suspV -= 1.5 * severity; v.hitT = Math.max(v.hitT, 0.25 * severity + 0.05);
       v.lastHit = { x: hitN.px, z: hitN.pz, nx: hitN.nx, nz: hitN.nz, t: performance.now() };   // where it hit, for the crash damage + sparks (update)
-      if (hitN.box && v.spec.car && v === S.mounted) shove(v, hitN, vn);
+      const hitCar = hitN.box && !!ownerOf(hitN.box);   // read before shove() can promote() the parked car it hit (that drops + replaces its box)
+      if (hitN.box && v === S.mounted) shove(v, hitN, vn);   // #183's mass system: a bike (MASS_BIKE fallback) gets shoved hard by a car, barely nudges it
       if (severity > 0.25 && v === S.mounted) { try { C.audio?.play?.('impact', { position: p, volume: severity }); } catch {} }
+      if (!sp.car && v === S.mounted) bikeCrash(v, hitN, vn, severity, hitCar);   // motorcycle / e-bike: its own damage + smoke, and a hard enough hit into a car throws the rider
     }
   }
   // the play area's outer edge (seams between the map and its zones are open): put back inside, bounce off it
@@ -845,6 +905,7 @@ export async function init(ctx) {
     qaSwingDoor(name, b = S.mounted) { return swingDoor(b, name || driverDoor(b)); },
     spawnCar: (x, z, yaw, kind, color, y, panels) => makeCar(x, z, yaw, kind, color, y ?? ctx.player?.position.y ?? 0, panels ?? true),
     qaSpawn(x, z, yaw = 0, y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeBike(x, z, yaw, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
+    qaSpawnEbike(x, z, yaw = 0, variant = 'citibike', y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeEbike(x, z, yaw, variant, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
     qaMount() { const b = nearestBike(); if (!b) return false; return mount(b); },
     /** jet skis: list + stand next to one (from the beach side) */
     get jetskis() { return S.bikes.filter((b) => b.spec.water); },
