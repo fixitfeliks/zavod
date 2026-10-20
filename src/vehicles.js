@@ -121,8 +121,11 @@ function makeJetski(x, z, yaw, i = 0) {
   C.scene.add(ski.group); parkBox(ski); C.colliders.push(ski.box); S.bikes.push(ski);
   return ski;
 }
-/** A drivable car from the shared car kit (geometry faces +x in the kit; vehicles face -z, so the kit is turned +90 deg). */
-function makeCar(x, z, yaw, kind = 'sedan', color = 0x22305c, yRef = 0) {
+/** A drivable car from the shared car kit (geometry faces +x in the kit; vehicles face -z, so the kit is turned +90 deg).
+ *  wantPanels: false for a car that starts live but isn't being driven or damaged yet (hangout's red car, the Soviet
+ *  classics parked by it) - cheap, merged body like a parked/traffic car; ensurePanels() splits it the first time it's
+ *  actually driven or hit, same as a promoted parked car. */
+function makeCar(x, z, yaw, kind = 'sedan', color = 0x22305c, yRef = 0, wantPanels = true) {
   if (!carSpec(kind) && kind !== 'bus') kind = 'sedan';
   const CM = carMaterials();
   const group = new THREE.Group(), body = new THREE.Group(); group.add(body);
@@ -130,22 +133,25 @@ function makeCar(x, z, yaw, kind = 'sedan', color = 0x22305c, yRef = 0) {
   const meshes = []; const paint = CM.paint.clone(); paint.color = new THREE.Color(color);
   const lampR = CM.lampR.clone(), lampW = CM.lampW.clone(); lampR.emissive = new THREE.Color(0xff1a0a); lampR.emissiveIntensity = 0.08; lampW.emissive = new THREE.Color(0xfff0d0); lampW.emissiveIntensity = 0.05;
   const mat = { paint, lampR, lampW, glass: CM.glassSee || CM.glass };   // see-through: the cabin (and whoever's in it) shows
-  let tyreR = 0.33, cab, wheels = null, busKit = null, panels = null, panes = null, geos = null;
+  let tyreR = 0.33, cab, wheels = null, busKit = null, panels = null, panes = null, geos = null, bodyMesh = null;
   if (kind === 'bus') { const B = buildBus({ sign: 'NOT IN SERVICE', lite: !!C.lite }); busKit = B; kit.add(B.group); for (const m of B.meshes) if (m.parent !== B.interior) meshes.push(m); cab = { wheel: new THREE.Group() }; }
   else if (hasCarModel(kind)) { const mdl = carModel(kind, color); kit.add(mdl); mdl.traverse((o) => { if (o.isMesh && o.name !== 'aoShadow') meshes.push(o); }); cab = { wheel: new THREE.Group() }; }   // a real model (with its own cabin)
-  else { const kitG = carGeometries(kind, { wheels: false, panels: true }), panelGeos = kitG.panels || {}; geos = kitG.geos;
-    for (const [slot, g] of Object.entries(geos)) { if (!g) continue; const m = new THREE.Mesh(g, mat[slot] || CM[slot]); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; kit.add(m); meshes.push(m); }
+  else { const kitG = carGeometries(kind, { wheels: false, panels: wantPanels }), panelGeos = kitG.panels || {}; geos = kitG.geos;
+    bodyMesh = {};
+    for (const [slot, g] of Object.entries(geos)) { if (!g) continue; const m = new THREE.Mesh(g, mat[slot] || CM[slot]); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; kit.add(m); meshes.push(m); if (slot === 'paint' || slot === 'glass') bodyMesh[slot] = m; }
     cab = carInterior(kind, geos); kit.add(cab.group);
-    // the split body (vehicledamage.js): each panel / pane on a pivot at its hinge, so it can hang, swing ajar or come off
-    panels = {}; panes = {};
-    for (const [n, g] of Object.entries(panelGeos)) { const glass = n.startsWith('glass'); g.computeBoundingBox(); const bb = g.boundingBox, ctr = bb.getCenter(new THREE.Vector3());
-      const hinge = n.startsWith('door') ? new THREE.Vector3(bb.max.x, ctr.y, ctr.z) : n === 'hood' ? new THREE.Vector3(bb.min.x, bb.max.y, 0) : n === 'trunk' ? new THREE.Vector3(bb.max.x, bb.max.y, 0) : ctr.clone();
-      const doorOf = glass && /^glass[FR][LR]$/.test(n) ? 'door' + n.slice(5) : null, host = doorOf && panels[doorOf] ? panels[doorOf].pivot : null;
-      let pivot = host; if (!pivot) { pivot = new THREE.Group(); pivot.position.copy(hinge); pivot.userData.home = hinge.clone(); kit.add(pivot); }
-      const m = new THREE.Mesh(g, glass ? mat.glass : paint); m.position.copy(pivot.userData.home).negate(); m.castShadow = !glass; m.receiveShadow = true; m.userData.surface = glass ? 'glass' : 'metal'; pivot.add(m); meshes.push(m);
-      if (glass) { m.userData.pane = true; panes[n] = { mesh: m, ctr, state: 0 }; if (doorOf && panels[doorOf]) (panels[doorOf].glass ||= []).push(n); }
-      else { const shell = cab.panelShells?.[n]; if (shell) { shell.removeFromParent(); shell.position.copy(m.position); pivot.add(shell); }
-        panels[n] = { mesh: m, shell, pivot, ctr, state: 0 }; } }
+    if (wantPanels) {
+      // the split body (vehicledamage.js): each panel / pane on a pivot at its hinge, so it can hang, swing ajar or come off
+      panels = {}; panes = {};
+      for (const [n, g] of Object.entries(panelGeos)) { const glass = n.startsWith('glass'); g.computeBoundingBox(); const bb = g.boundingBox, ctr = bb.getCenter(new THREE.Vector3());
+        const hinge = n.startsWith('door') ? new THREE.Vector3(bb.max.x, ctr.y, ctr.z) : n === 'hood' ? new THREE.Vector3(bb.min.x, bb.max.y, 0) : n === 'trunk' ? new THREE.Vector3(bb.max.x, bb.max.y, 0) : ctr.clone();
+        const doorOf = glass && /^glass[FR][LR]$/.test(n) ? 'door' + n.slice(5) : null, host = doorOf && panels[doorOf] ? panels[doorOf].pivot : null;
+        let pivot = host; if (!pivot) { pivot = new THREE.Group(); pivot.position.copy(hinge); pivot.userData.home = hinge.clone(); kit.add(pivot); }
+        const m = new THREE.Mesh(g, glass ? mat.glass : paint); m.position.copy(pivot.userData.home).negate(); m.castShadow = !glass; m.receiveShadow = true; m.userData.surface = glass ? 'glass' : 'metal'; pivot.add(m); meshes.push(m);
+        if (glass) { m.userData.pane = true; panes[n] = { mesh: m, ctr, state: 0 }; if (doorOf && panels[doorOf]) (panels[doorOf].glass ||= []).push(n); }
+        else { const shell = cab.panelShells?.[n]; if (shell) { shell.removeFromParent(); shell.position.copy(m.position); pivot.add(shell); }
+          panels[n] = { mesh: m, shell, pivot, ctr, state: 0 }; } }
+    }
     // the wheels: their own meshes on pivots (kit frame), so they roll with the distance driven and the fronts steer (visuals()); the calipers stay put on the pivot
     const lay = wheelLayout(kind), wg = wheelGeometry(lay.r, lay.style); tyreR = lay.r;
     wheels = lay.wheels.map((w) => { const pivot = new THREE.Group(); pivot.position.set(w.x, w.y, w.z); kit.add(pivot); const flip = new THREE.Group(); if (w.side < 0) flip.rotation.y = Math.PI; pivot.add(flip);
@@ -159,11 +165,34 @@ function makeCar(x, z, yaw, kind = 'sedan', color = 0x22305c, yRef = 0) {
   const headlight = new THREE.SpotLight(0xfff2d8, 0, 55, 0.5, 0.5, 1.4); headlight.position.set(0, 0.8, -sp.hz + 0.1); headlight.target.position.set(0, 0, -16); group.add(headlight); group.add(headlight.target); headlight.visible = false;
   const lens = { material: lampW };
   const dummy = new THREE.Group();
-  const car = { group, body, fork: dummy, wheelF: dummy, wheelR: dummy, carWheels: wheels, busKit, headlight, lens, lampR, meshes, kind, color, steerWheel: cab.wheel, cabin: cab.group || null, kit, panels, panes, tyreR, needles: cab.needles || null, mass: massOf(kind), ...baseState(x, z, yaw, yRef), spec: sp };
+  const car = { group, body, fork: dummy, wheelF: dummy, wheelR: dummy, carWheels: wheels, busKit, headlight, lens, lampR, meshes, kind, color, steerWheel: cab.wheel, cabin: cab.group || null, kit, panels, panes, tyreR, needles: cab.needles || null, mass: massOf(kind), bodyMesh, mat, ...baseState(x, z, yaw, yRef), spec: sp };
   group.position.copy(car.pos); group.rotation.y = yaw;
   for (const m of meshes) { m.userData.vehicle = car; C.raycastTargets.push(m); }
   C.scene.add(group); parkBox(car); C.colliders.push(car.box); S.bikes.push(car); rebuildGrids();
   return car;
+}
+/** split a live car's merged body into panels the first time it's driven or damaged (mount() / onShot() / shove() call this):
+ *  swaps the merged paint/glass for the panel-geometry remainder and adds the hood/trunk/fender/door/bumper pivots and panes.
+ *  No-op once split, and for the bus / a real model (no kit panels to begin with). */
+function ensurePanels(car) {
+  if (!car || car.panels || !car.bodyMesh || !car.kit) return;
+  const kitG = carGeometries(car.kind, { wheels: false, panels: true }), panelGeos = kitG.panels || {};
+  if (!Object.keys(panelGeos).length) return;
+  for (const slot of ['paint', 'glass']) {
+    const old = car.bodyMesh[slot], g = kitG.geos[slot]; if (!old || !g) continue;
+    old.removeFromParent(); const mi = car.meshes.indexOf(old); if (mi > -1) car.meshes.splice(mi, 1); const ri = C.raycastTargets.indexOf(old); if (ri > -1) C.raycastTargets.splice(ri, 1);
+    const m = new THREE.Mesh(g, car.mat[slot] || car.mat.paint); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; m.userData.vehicle = car;
+    car.kit.add(m); car.meshes.push(m); car.bodyMesh[slot] = m; C.raycastTargets.push(m);
+  }
+  const panels = {}, panes = {};
+  for (const [n, g] of Object.entries(panelGeos)) { const glass = n.startsWith('glass'); g.computeBoundingBox(); const bb = g.boundingBox, ctr = bb.getCenter(new THREE.Vector3());
+    const hinge = n.startsWith('door') ? new THREE.Vector3(bb.max.x, ctr.y, ctr.z) : n === 'hood' ? new THREE.Vector3(bb.min.x, bb.max.y, 0) : n === 'trunk' ? new THREE.Vector3(bb.max.x, bb.max.y, 0) : ctr.clone();
+    const doorOf = glass && /^glass[FR][LR]$/.test(n) ? 'door' + n.slice(5) : null, host = doorOf && panels[doorOf] ? panels[doorOf].pivot : null;
+    let pivot = host; if (!pivot) { pivot = new THREE.Group(); pivot.position.copy(hinge); pivot.userData.home = hinge.clone(); car.kit.add(pivot); }
+    const m = new THREE.Mesh(g, glass ? car.mat.glass : car.mat.paint); m.position.copy(pivot.userData.home).negate(); m.castShadow = !glass; m.receiveShadow = true; m.userData.surface = glass ? 'glass' : 'metal'; m.userData.vehicle = car; pivot.add(m); car.meshes.push(m); C.raycastTargets.push(m);
+    if (glass) { m.userData.pane = true; panes[n] = { mesh: m, ctr, state: 0 }; if (doorOf && panels[doorOf]) (panels[doorOf].glass ||= []).push(n); }
+    else panels[n] = { mesh: m, shell: null, pivot, ctr, state: 0 }; }
+  car.panels = panels; car.panes = panes;
 }
 function parkBox(v) {
   const c = Math.cos(v.heading), s = Math.sin(v.heading), sp = v.spec;
@@ -221,6 +250,7 @@ function setRaycastable(v, on) {
 function mount(bike) {
   const p = C.player; if (!bike || !p || S.mounted || p.mounted || isWrecked(bike)) return false;
   S.mounted = bike; p.mounted = bike; bike.parked = false; unparkBox(bike);
+  if (bike.spec.car) ensurePanels(bike);   // driving it: splits the body into damageable panels if it started merged (hangout's red car, Soviet classics)
   setRaycastable(bike, false);   // your own vehicle never eats your bullets (chase cam rays pass through it)
   bike.headlight.visible = true; bike.headlight.intensity = 260; bike.lens.material.emissiveIntensity = bike.spec.car ? 1.2 : 3.5;
   S.lookYaw = clamp(wrap(p.yaw - bike.heading), -bike.spec.lookYaw, bike.spec.lookYaw); S.lookPitch = clamp(p.pitch, -LOOK_PITCH, LOOK_PITCH);
@@ -328,7 +358,7 @@ function shove(v, hitN, vn) {
   // an off-centre hit spins it: lever arm of the contact about its centre, across the push
   const rx = hitN.px - other.pos.x, rz = hitN.pz - other.pos.z; other.spinV = (other.spinV || 0) + SPIN_K * (rx * -nz - rz * -nx) * dv / Math.max(1, other.spec.hz * other.spec.hz) * 0.5;
   if (other.parked) { other.sliding = true; }
-  const now = performance.now(); if (now - (other.crashT || 0) > 400 && dv > 1.5) { other.crashT = now; try { damageHit(C, other, dv * 1.6, _v.set(hitN.px, other.pos.y + 0.6, hitN.pz).clone(), new THREE.Vector3(-nx, 0, -nz)); } catch (e) { console.warn('[vehicles] damage other', e); } }
+  const now = performance.now(); if (now - (other.crashT || 0) > 400 && dv > 1.5) { other.crashT = now; try { ensurePanels(other); damageHit(C, other, dv * 1.6, _v.set(hitN.px, other.pos.y + 0.6, hitN.pz).clone(), new THREE.Vector3(-nx, 0, -nz)); } catch (e) { console.warn('[vehicles] damage other', e); } }
 }
 /** a shoved car with nobody in it: slides on scrubbing tyres, spins down, stops against walls; back into the grid when it stops */
 function slide(v, dt) {
@@ -358,7 +388,7 @@ function crunch(v, at, k) {
 /** a bullet hit something ('impact' from weapons.js): a car of ours, or a parked kit car (made live, then hit) */
 function onShot(e) {
   const o = e?.object; if (!o || !e.point || !e.normal) return; const dir = e.dir || new THREE.Vector3();
-  const veh = o.userData?.vehicle; if (veh?.spec?.car) return damageShot(C, veh, o, e.point, e.normal, dir, e.damage);
+  const veh = o.userData?.vehicle; if (veh?.spec?.car) { ensurePanels(veh); return damageShot(C, veh, o, e.point, e.normal, dir, e.damage); }
   if (!o.isInstancedMesh || e.instanceId == null || !/^cars:/.test(o.name)) return;
   const list = C.world?.parkedCars || []; if (S.refKey !== list.length) { S.refKey = list.length; S.byRef = new Map(); for (const c of list) for (const r of c.refs || []) S.byRef.set(r.im.uuid + ':' + r.i, c); }
   const c = S.byRef.get(o.uuid + ':' + e.instanceId); if (!c) return; const car = promote(c); if (!car) return;
@@ -803,7 +833,7 @@ export async function init(ctx) {
     hit: (other, impulse) => aiHit(other, impulse),
     /** qa: damage of a car (or the one you drive), make a parked car live */
     qaDamage: (b) => damageState(b || S.mounted), qaPromote: (c) => promote(c),
-    spawnCar: (x, z, yaw, kind, color, y) => makeCar(x, z, yaw, kind, color, y ?? ctx.player?.position.y ?? 0),
+    spawnCar: (x, z, yaw, kind, color, y, panels) => makeCar(x, z, yaw, kind, color, y ?? ctx.player?.position.y ?? 0, panels ?? true),
     qaSpawn(x, z, yaw = 0, y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeBike(x, z, yaw, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
     qaMount() { const b = nearestBike(); if (!b) return false; return mount(b); },
     /** jet skis: list + stand next to one (from the beach side) */

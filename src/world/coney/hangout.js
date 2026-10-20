@@ -271,12 +271,14 @@ function buildRedCar(world) {
   let best = null, bd = 1e9; for (const c of cars) { if (c.gone || c.kind === 'van') continue; const d = Math.hypot(c.x - sx, c.z - sz); if (d > 12 && d < bd) { bd = d; best = c; } }
   if (!best || !ctx.vehicles?.spawnCar) return;
   const i = cars.indexOf(best); stealLocal(i, false);   // the kerb slot becomes the red car
-  const car = ctx.vehicles.spawnCar(best.x, best.z, (best.ry || 0) - Math.PI / 2, 'coupe', 0xb3121c, 0);
+  // panels: false - these sit for the whole session until someone actually drives or shoots one (ensurePanels in
+  // vehicles.js splits the body then); eagerly splitting all 4 at boot cost ~30 extra draws apiece for cars nobody's touched
+  const car = ctx.vehicles.spawnCar(best.x, best.z, (best.ry || 0) - Math.PI / 2, 'coupe', 0xb3121c, 0, false);
   if (!car) return; car.isRed = true; H.red = { car, mine: false, hidden: false };
   { const hd = (best.ry || 0) - Math.PI / 2, fx = -Math.sin(hd), fz = -Math.cos(hd);   // Soviet classics parked along the same kerb (drivable)
     for (const [d, kind, col] of [[-6.2, 'lada', 0xe8dcb4], [6.4, 'volga', 0x141414], [12.6, 'moskvich', 0x8fb3c8]]) { const x = best.x + fx * d, z = best.z + fz * d;
       cars.forEach((c, k) => { if (!c.gone && Math.hypot(c.x - x, c.z - z) < KERB_SLOT) stealLocal(k, false); });   // it takes that kerb slot: the instanced car parked there goes (they sat 0.8 m apart)
-      try { ctx.vehicles.spawnCar(x, z, hd, kind, col, 0); } catch (e) { console.warn('[hangout] soviet car', kind, e); } } }
+      try { ctx.vehicles.spawnCar(x, z, hd, kind, col, 0, false); } catch (e) { console.warn('[hangout] soviet car', kind, e); } } }
   // a red marker so friends can find it
   const c = document.createElement('canvas'); c.width = 256; c.height = 64; const g = c.getContext('2d'); g.font = '700 30px Barlow, Arial'; g.textAlign = 'center'; g.fillStyle = 'rgba(0,0,0,0.5)'; g.fillRect(20, 10, 216, 44); g.fillStyle = '#ff5a5a'; g.fillText('THE RED CAR', 128, 42);
   const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true })); tag.scale.set(1.8, 0.45, 1); tag.position.set(0, 2.4, 0); car.group.add(tag); H.red.tag = tag;
