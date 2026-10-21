@@ -81,9 +81,33 @@ function shopFaces(b) {
   return out;
 }
 
+// roof kit: local PRNG only (mulberry32 seeded from the centroid), never world.R: shellrd.js's own hash rule applies to roofs too.
+const ROOF_LOOKS = ['steelDark', 'roofMetal', 'roof'];   // dark tar, grey membrane, gravel ballast: all already loaded by sbu/mats.js, no new textures
+const mulberry32 = (a) => () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const roofRng = (cx, cz) => mulberry32((Math.round(cx * 97.13) ^ Math.round(cz * 193.71) ^ 0x9e3779b9) | 0);
+
+/** a wooden-barrel water tank on a steel stand, roof-mounted: existing materials only (steelDark, planksDark), collide:false */
+function s2Tank(B, cx, cz, y0, R) {
+  const lx = 1.2 + R() * 0.3;
+  for (const [dx, dz] of [[-lx, -lx], [lx, -lx], [-lx, lx], [lx, lx]]) B.cyl('steelDark', cx + dx, cz + dz, y0, y0 + 1.6, 0.08, 6);
+  B.box('steelDark', [cx - lx - 0.1, y0 + 1.55, cz - lx - 0.1], [cx + lx + 0.1, y0 + 1.7, cz + lx + 0.1], { collide: false });   // brace plate
+  B.cyl('planksDark', cx, cz, y0 + 1.7, y0 + 3.5, 1.1, 10);   // barrel
+  for (const hy of [y0 + 2.1, y0 + 2.9]) B.cyl('steelDark', cx, cz, hy, hy + 0.08, 1.13, 10);   // hoop bands
+  B.add('steelDark', new THREE.ConeGeometry(1.2, 0.9, 10).translate(cx, y0 + 3.95, cz), { uv: false });   // conical cap
+}
+
+/** parapet cap + a hashed dark-tar / grey-membrane / gravel deck, HVAC units and a stair bulkhead (roofKit, sbu/buildings.js),
+ *  and on ~1 in 4 of the taller walk-ups a water tank. R is a fresh mulberry32 per building, seeded from its centroid. */
+function s2Roof(B, b) {
+  const cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2, R = roofRng(cx, cz);
+  const k = R(), look = ROOF_LOOKS[k < 0.4 ? 0 : k < 0.75 ? 1 : 2];
+  roofKit(B, b.x0, b.z0, b.x1, b.z1, b.h, look, R, 1 + Math.floor(R() * 3));
+  if (b.h >= PAINT_H && b.x1 - b.x0 > 8 && b.z1 - b.z0 > 8 && R() < 0.25) s2Tank(B, cx + (R() - 0.5) * 2, cz + (R() - 0.5) * 2, b.h + 0.3, R);
+}
+
 /** the S2 boxes (horizon.js sprawl entries {x0, z0, x1, z1, h, tint}) on the facade kit; T: the sprawl's tint table */
 export function buildS2(world, M, boxes, T) {
-  const E = s2Mats(world, M), B = new Batch(world, M, 'shellRd'), noR = () => 1;   // roofKit: no HVAC / bulkhead (the sprawl's roof kit stays)
+  const E = s2Mats(world, M), B = new Batch(world, M, 'shellRd');
   let shops = 0;
   for (const b of boxes) {
     const cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2, k = hash(cx, cz), w = b.x1 - b.x0, d = b.z1 - b.z0;
@@ -109,7 +133,7 @@ export function buildS2(world, M, boxes, T) {
       kitWall(B, E[look] || look, b, 0, k);
       if (b.h > 9 && look !== 'concreteWhite') for (const f of [0, 1, 4, 5]) { const a0 = f === 4 || f === 5 ? b.x0 : b.z0, a1 = f === 4 || f === 5 ? b.x1 : b.z1; faceBox(B, look === 'brickRust' ? 'cornice' : 'corniceDark', f, b, a0 - 0.25, a1 + 0.25, b.h - 0.55, b.h - 0.15, 0, 0.25); }   // pressed-metal / stone cornice
     }
-    roofKit(B, b.x0, b.z0, b.x1, b.z1, b.h, 'roof', noR, 0);
+    s2Roof(B, b);
   }
   B.flush();
   return { boxes: boxes.length, shops };
