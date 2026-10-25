@@ -12,7 +12,13 @@
 // fan art / non-commercial only (assets/models/bmw-m4/SOURCE.md - remove before ZAVOD is ever monetised); converted the
 // same way (tools/prep-car-model.mjs `blend` mode) into flat vertex-coloured body-<cls> buckets instead of a baked texture,
 // wheels also static (its rim/tyre geometry covers all four positions in one mirrored mesh, no single template to split
-// out). They load a few seconds after the first frame (the procedural carkit body stands in until then, and for good if a
+// out). skyline-r34 = "Nissan Skyline R34 GT-R" by tikiteyboo, CC BY 3.0 (assets/models/skyline-r34/SOURCE.md), the
+// rarer sporty model in the mix in place of part of the muscle-car share; its body shell object had to be dropped
+// (a source-data defect, not a conversion choice - see SOURCE.md), so it's built from its many individually-named
+// panels instead, which leaves a small visible gap near the rear roofline. The Audi S5 was converted
+// (assets/models/audi-s5/, CC BY-SA 3.0) but isn't wired in here: its reconstruction comes out visibly broken (see
+// its SOURCE.md) - the source has no part hierarchy or naming to lean on, unlike the BMW and the Skyline. They load
+// a few seconds after the first frame (the procedural carkit body stands in until then, and for good if a
 // load fails): parked rows and traffic swap to them through onCarModel(). A car that goes live (driven, stolen, shot)
 // stays the carkit build: its split panels, doors, roll-down panes and cabin are what vehicledamage.js, the Uber and the
 // windows work on (these models have no separate glass or interior to drive with).
@@ -28,8 +34,8 @@ const M = {};   // kind -> { root: Group (normalised), parts: [{ geo, mat, m4, b
 let loading = null;
 // kind -> file. sedan = the Sloyd model (see SOURCE.md); textured: true keeps its own baked texture instead of the shared
 // flat-colour kit palette. *-lite.glb: the ~7k-triangle cut for phones.
-const KIT = { sedan: { file: 'sloyd-sedan', textured: true }, 'bmw-m4': { file: 'bmw-m4' } };
-const KIT_LITE = ['sedan', 'bmw-m4'];
+const KIT = { sedan: { file: 'sloyd-sedan', textured: true }, 'bmw-m4': { file: 'bmw-m4' }, 'skyline-r34': { file: 'skyline-r34' } };
+const KIT_LITE = ['sedan', 'bmw-m4', 'skyline-r34'];
 /** this kind has a street model coming (load started, not necessarily in yet) */
 export const kitModelPending = (kind, ctx) => !!KIT[kind] && (!ctx?.lite || KIT_LITE.includes(kind)) && !!loading;
 const ready = [];   // onCarModel listeners

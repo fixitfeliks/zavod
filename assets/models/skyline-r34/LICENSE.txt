@@ -1,0 +1,12 @@
+CC BY 3.0 (Creative Commons Attribution 3.0 Unported)
+
+The source model ("Nissan Skyline R34 GT-R", Blend Swap blend #92438) was released by tikiteyboo
+under CC BY 3.0: https://creativecommons.org/licenses/by/3.0/
+
+Required attribution:
+"Nissan Skyline R34 GT-R" by tikiteyboo (https://blendswap.com/profile/858613), Blend Swap blend
+#92438 (https://www.blendswap.com/blends/view/92438), licensed under CC BY 3.0
+(https://creativecommons.org/licenses/by/3.0/). No non-commercial clause.
+
+The converted files in this folder (skyline-r34.glb, skyline-r34-lite.glb) carry the same licence
+and the same attribution requirement.

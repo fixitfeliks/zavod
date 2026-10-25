@@ -47,7 +47,7 @@ async function prepBlend(inFile, outFile, targetTris, targetLen) {
     if (/glass|glazing/.test(n)) return 'glass';
     if (/paint/.test(n)) return 'paint';
     if (/lens|lamp|tail|indicat/.test(n)) return 'lamp';
-    if (/chrome|steel|alumin|brass|rim(?!_screw)/.test(n)) return 'metal';
+    if (/chrome|steel|alumin|brass|(?<![a-z])rim(?!_screw)/.test(n)) return 'metal';   // (?<![a-z]): a standalone "rim", not "trim"
     void nodeName; return 'dark';
   };
   const parts = [];
@@ -74,6 +74,30 @@ async function prepBlend(inFile, outFile, targetTris, targetLen) {
     }
   });
   const bbOf = (p) => { const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; for (let i = 0; i < p.length; i += 3) for (let k = 0; k < 3; k++) { b[k] = Math.min(b[k], p[i + k]); b[k + 3] = Math.max(b[k + 3], p[i + k]); } return b; };
+  for (const p of parts) p.bb = bbOf(p.pos);
+  const rough = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (const p of parts) for (let k = 0; k < 3; k++) { rough[k] = Math.min(rough[k], p.bb[k]); rough[k + 3] = Math.max(rough[k + 3], p.bb[k + 3]); }
+  // a part with one vertex miles from the rest of its own geometry is a source-data defect, not something to keep:
+  // a disabled modifier (convert_blend.py logs these - "Curve ... disabled, skipping apply") can leave its
+  // un-deformed control cage, a straight run of vertices along the old path with one far off, in the exported mesh
+  // instead of the curved strip it should be. Per-axis median vs max catches that without an absolute size cutoff
+  // (which would also catch a legitimately big panel like the body shell before it's scaled down to spec): a part
+  // is fine as long as every vertex sits within a car-sized radius of its own median point.
+  // a part still carrying Blender's own default primitive name (never renamed by whoever modelled this) and sitting
+  // well off to one side is very likely a leftover reference prop (a scale ball, a studio marker), not part of the
+  // car; the main body keeping a default name too (seen on the Skyline) is caught separately above, by its own
+  // stray-vertex defect, not by this.
+  const DEFAULT_PRIM_NAME = /^(cube|sphere|cylinder|torus|circle)(\.\d+)?$/i;
+  const median = (xs) => { const s = xs.slice().sort((a, b) => a - b); return s[s.length >> 1]; };
+  const parts2 = [];
+  for (const p of parts) {
+    if (DEFAULT_PRIM_NAME.test(p.name)) { const c = [(p.bb[0] + p.bb[3]) / 2, (p.bb[2] + p.bb[5]) / 2]; if (Math.hypot(c[0] - (rough[0] + rough[3]) / 2, c[1] - (rough[2] + rough[5]) / 2) > 1.2) { console.log('[prep-car-model] blend: dropping', p.name, '- a default-named part off to one side, looks like a leftover reference prop'); continue; } }
+    const mx = median(Array.from({ length: p.pos.length / 3 }, (_, i) => p.pos[i * 3])), my = median(Array.from({ length: p.pos.length / 3 }, (_, i) => p.pos[i * 3 + 1])), mz = median(Array.from({ length: p.pos.length / 3 }, (_, i) => p.pos[i * 3 + 2]));
+    let far = 0; for (let i = 0; i < p.pos.length; i += 3) far = Math.max(far, Math.hypot(p.pos[i] - mx, p.pos[i + 1] - my, p.pos[i + 2] - mz));
+    if (far > 4) { console.log('[prep-car-model] blend: dropping', p.name, '(', p.cls, ') - a vertex', far.toFixed(1), 'm from the rest of its own geometry, looks like a disabled modifier left its control cage in'); continue; }
+    parts2.push(p);
+  }
+  parts.length = 0; parts.push(...parts2);
   for (const p of parts) p.bb = bbOf(p.pos);
   const all = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
   for (const p of parts) for (let k = 0; k < 3; k++) { all[k] = Math.min(all[k], p.bb[k]); all[k + 3] = Math.max(all[k + 3], p.bb[k + 3]); }
