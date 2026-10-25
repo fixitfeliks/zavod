@@ -13,7 +13,8 @@ import { placeCars, parkedCarBoxes, parkMix, CAR_COLORS } from '../carkit.js';
 import { BUS_STOPS } from './traffic.js';
 import { SURF_HH, stationClear } from './stillwell.js';
 import { w8Lots, inW8Site } from './realism.js';
-import { isSchool, buildSchool } from './school.js';   // no parking at the bus stops
+import { isSchool, buildSchool } from './school.js';
+import { s2Parts } from './shellrd.js';   // no parking at the bus stops
 
 // own seeded PRNG (never world.R): S1's lot cars are new ground this build didn't cover on main, and drawing them from world.R
 // would shift every call after them, including housing.js's buildHousing() a few lines later in coney.js
@@ -53,10 +54,16 @@ export function buildCity(world, M, toGPU = () => 0) {
 
   // ---- buildings ----------------------------------------------------------------------------------------------------
   const inPlay = (b) => b.play;
+  // an outline whose OSM building:part pieces coney/shellrd.js builds (after housing.js): still built here, into a batch that is
+  // never drawn, so its world.R draws stay exactly as they were. Its colliders stay until housing.js is built too (builders up to
+  // there skip spots by them, and so draw world.R or not); shellrd.js then drops them (W.s2Unseen) for the parts' own
+  const s2Unseen = world.W.s2Unseen = [], keepBox = (b) => { if (b) s2Unseen.push(b); return b; };
+  const unseen = { ...world, box: (mn, mx) => keepBox(world.box(mn, mx)), walkable: (mn, mx) => keepBox(world.walkable(mn, mx)) };
   for (const b of OSM.b) {
     // Luna Park Houses (the five ~21-storey towers north of the avenue) are built by coney/housing.js — skip them here
     if (b.s === 'tower' && b.h > 50) { const [lx, lz] = cen(b.p); if (lx > 60 && lx < 380 && lz > -520 && lz < -110) continue; }
     { const [lx, lz] = cen(b.p); if (stationClear(lx, lz)) continue; if (isSchool(lx, lz)) { try { buildSchool(S, world, M); } catch (e) { console.warn('[coney] P.S. 90', e); } continue; } }   // P.S. 90 on W 12th: school.js   // the Stillwell Ave station's Surf Ave head house + bus loop: stillwell.js
+    if (s2Parts(b)) { try { building(new Batch(unseen, M, 'cityUnseen'), unseen, M, b); } catch (e) { console.warn('[coney] building', e); } continue; }
     const T = inPlay(b) ? S : F;
     try { building(T, world, M, b); } catch (e) { console.warn('[coney] building', e); }
   }

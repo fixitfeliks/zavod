@@ -35,3 +35,4 @@ Assets: Poly Haven (CC0), three.js example soldier, Microsoft Rocketbox avatars 
 
 ## Credits
 - Ferrari 458 Italia model by [vicent091036](https://sketchfab.com/models/57bf6cc56931426e87494f554df1dab6), CC-BY 4.0, via the three.js examples (`assets/models/cars/ferrari.glb`).
+- Map data (c) [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, available under the Open Database License (ODbL 1.0): the Coney Island streets, rails and buildings (`src/world/coney/osm.js`, `streetnames.js`) and the buildings round the Neptune Av station (`src/world/coney/osm-neptune.js`, made by `tools/import-osm-area.mjs`).

@@ -14,6 +14,7 @@ import { buildCity } from '../coney/city.js';
 import { buildHousing } from '../coney/housing.js';
 import { buildShore, BW, sandHeight, waterZ, SAND_TOP } from '../coney/shore.js';
 import { buildHorizon } from '../coney/horizon.js';
+import { buildS2 } from '../coney/shellrd.js';
 import { buildLandmarks, LM } from '../coney/landmarks.js';
 import { buildBeachLife } from '../coney/life.js';
 import { buildPark } from '../coney/park.js';
@@ -69,6 +70,7 @@ export async function build(world) {
   await step(); try { buildAirSupport(world); } catch (e) { console.warn('[coney] air support', e); }   // 2 stars: the NYPD chopper, 3: a tank (coney/airsupport.js)
   await step(); ctx.progress(0.19, 'coney: boardwalk + beach'); buildShore(world, M);
   const skip = new Set(String(ctx.qs?.get?.('skip') || '').split(','));   // ?skip=horizon,belt,subway,greens,crowds,traffic (and tavern, brighton in hangout.js)
+  await step(); try { const s = buildS2(world, M); console.info(`[coney] S2 Neptune Av: ${s.buildings} OSM buildings, ${s.rects} rects (${s.trimmed} trimmed off streets / the el, ${s.dropped} dropped), ${s.shops} shopfronts, ${s.cells} collider cells`); } catch (e) { console.warn('[coney] S2', e); }   // the real buildings round the Neptune Av el (coney/shellrd.js, after housing: local PRNGs, own colliders)
   await step(); if (!skip.has('horizon')) try { buildHorizon(world); } catch (e) { console.warn('[coney] horizon', e); }   // far distance + day→night cycle (coney/horizon.js)
   await step(); if (!skip.has('belt')) try { buildBelt(world); } catch (e) { console.warn('[coney] belt', e); }
   await step(); if (!skip.has('ferry')) try { buildFerry(world); } catch (e) { console.warn('[coney] ferry', e); }   // the NYC Ferry from the pier to the Verrazzano and back (coney/ferry.js)

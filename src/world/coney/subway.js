@@ -136,7 +136,7 @@ function buildLine() {
   R.cars = buildTrain(world.scene);
   R.sideSign = sideSignFor(cfg);   // which side the track back to Stillwell is on (the el and the stations are built for both)
   buildEl(world, P);
-  if (cfg.id === 'F') buildElStation(world, stops[2].s, { id: 'NEP', name: 'Neptune Av', zone: 'NEPTUNE AV · SHELL RD', hint: 'the F back to Coney', cross: NEP_Z, street: true });
+  if (cfg.id === 'F') buildElStation(world, stops[2].s, { id: 'NEP', name: 'Neptune Av', zone: 'NEPTUNE AV · SHELL RD', hint: 'the F back to Coney', street: false });   // its streets and buildings are the real OSM ones (city.js, coney/shellrd.js)
   if (cfg.id === 'Q') buildElStation(world, stops[2].s, { id: 'OCP', name: 'Ocean Pkwy', zone: 'OCEAN PKWY · BRIGHTON BEACH AV', hint: 'the Q back to Coney', street: !world.W.brighton });   // coney/brighton.js builds the streets round it when it's there
   if (cfg.id === 'D') buildElStation(world, stops[1].s, { id: 'B50', name: 'Bay 50 St', zone: 'BAY 50 ST', hint: 'the D back to Coney', street: false });
   boardingSpot();
@@ -847,7 +847,6 @@ function buildElStation(world, sHead, opt) {
   // street: Shell Rd under the el, Neptune Ave across, sidewalks, a row of storefronts / walk-ups each side
   const plane = (m, a0, a1, o0, o1, yy) => { const g = new THREE.PlaneGeometry(o1 - o0, a1 - a0); g.rotateX(-Math.PI / 2); const me = new THREE.Mesh(g, m); me.position.copy(at((a0 + a1) / 2, (o0 + o1) / 2, yy)); me.rotation.y = ang; me.receiveShadow = true; scene.add(me); };
   if (opt.street) plane(asph, -260, 260, -10, 10, 0.03); if (opt.street) { plane(walk, -260, 260, -14, -10, 0.05); plane(walk, -260, 260, 10, 14, 0.05);
-  { const g = new THREE.PlaneGeometry(260, 18); g.rotateX(-Math.PI / 2); const me = new THREE.Mesh(g, asph); me.position.set(c0.x, 0.035, NEP_Z); me.receiveShadow = true; if (opt.cross) scene.add(me); }   // Neptune Ave (E–W)
   const fac = facadeTex(), facM = [0xb88a70, 0xd8c7a6, 0x9c5a44, 0xc9c1b0].map((c) => new THREE.MeshStandardMaterial({ map: fac, color: c, roughness: 0.9 }));
   for (const s of [-1, 1]) for (let a = -200; a < 220; a += 13 + ((a * 7) % 5)) { if (Math.abs(at(a, 0, 0).z - NEP_Z) < 16 || (opt.id === 'OCP' && at(a, 0, 0).x < 870)) continue; const h = 7 + ((a * 13) % 7); rbox(facM[((a / 13) | 0) & 3], a, a + 12, s * 15, s * 27, 0, h, { coarse: true }); }
   }

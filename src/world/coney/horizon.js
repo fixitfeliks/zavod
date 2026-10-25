@@ -23,7 +23,7 @@ import { OSM } from './osm.js';
 import { YARD } from './yard.js';
 import { inCreek } from './realism.js';
 import { EAST_TOWER } from './mats.js';
-import { inS2, buildS2, S2_WIN } from './shellrd.js';
+import { inS2, onEl, S2_WIN } from './shellrd.js';
 
 const D2R = Math.PI / 180;
 const LAT0 = 40.5745, LON0 = -73.98, KX = 111320 * Math.cos(LAT0 * D2R), KY = 110540, CT = Math.cos(8.33 * D2R), ST_ = Math.sin(8.33 * D2R);
@@ -163,7 +163,6 @@ export function buildHorizon(world) {
   const ocean = buildOcean(world); count(ocean);
   const land = buildLand(world, R); land.forEach(count);
   const sprawl = buildSprawl(world, R, texF); sprawl.meshes.forEach(count);
-  if (sprawl.s2.length && world.mats) try { const s = buildS2(world, world.mats, sprawl.s2, sprawl.tints); console.info(`[horizon] S2 Shell Rd: ${s.boxes} boxes on the facade kit, ${s.shops} taxpayers`); } catch (e) { console.warn('[horizon] S2', e); }
   const sky = buildSkyline(world, R); sky.meshes.forEach(count);
   // lights sample the rides' struts and the scene's lamp meshes: those are built after us (landmarks, park), so defer to frame 1
   // (or at the pre-warm, whichever comes first: on phones / the headset the pre-warm frees those meshes' vertex arrays before frame 1)
@@ -377,10 +376,13 @@ function buildSprawl(world, R, texF) {
     const g = box.clone(); g.setAttribute('aTint', new THREE.InstancedBufferAttribute(tint, 3)); g.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seed, 1)); im.geometry = g;
     im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere(); meshes.push(addMesh(world, null, m, { far: isFar, order: isFar ? -985 : 0, name, instanced: im }));
   };
-  // S2 (north of Neptune Av, east of Shell Rd): those boxes are built on the facade kit instead (coney/shellrd.js), after all the
-  // R() draws above so the rest of the sprawl, its roof kit and the lamps (from the full near list) lay out exactly as before
-  const s2 = near.filter((b) => inS2((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2)), s2Set = new Set(s2);
-  inst(near.filter((b) => !s2Set.has(b)).concat(kit), false, 'sprawlNear'); inst(far, true, 'sprawlFar');
+  // S2 round the Neptune Av el (coney/shellrd.js builds the real OSM buildings there) and the el corridor anywhere: no sprawl box,
+  // roof-kit piece, tank or street tree. Dropped after all the R() draws above, so the rest lays out exactly as before
+  const gone = (x0, z0, x1, z1) => inS2((x0 + x1) / 2, (z0 + z1) / 2) || onEl(x0, z0, x1, z1);
+  const s2 = near.filter((b) => gone(b.x0, b.z0, b.x1, b.z1)), s2Set = new Set(s2);
+  inst(near.filter((b) => !s2Set.has(b)).concat(kit.filter((b) => !gone(b.x0, b.z0, b.x1, b.z1))), false, 'sprawlNear'); inst(far.filter((b) => !onEl(b.x0, b.z0, b.x1, b.z1)), true, 'sprawlFar');
+  const treesBefore = trees.length;   // each tree draws one R() below: the dropped ones still do, so the skyline and lights keep their layout
+  for (const L of [tanks, trees]) { const keep = L.filter(([x, z]) => !inS2(x, z) && !onEl(x - 2, z - 2, x + 2, z + 2)); L.length = 0; L.push(...keep); }
   // water tanks on the walk-ups and towers (near ring): wooden barrel + conical cap on a steel stand
   if (tanks.length) {
     const parts = [new THREE.CylinderGeometry(1.5, 1.5, 3.2, 10, 1, true).translate(0, 3.6, 0), new THREE.ConeGeometry(1.7, 1.2, 10).translate(0, 5.8, 0), new THREE.BoxGeometry(2.4, 2.0, 2.4).translate(0, 1.0, 0)];
@@ -402,7 +404,8 @@ function buildSprawl(world, R, texF) {
     trees.forEach(([x, z, sc], k) => { q.setFromAxisAngle(up, R() * 3); s.setScalar(sc); p.set(x, 0, z); M4.compose(p, q, s); im.setMatrixAt(k, M4); }); im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere();
     meshes.push(addMesh(world, null, m, { name: 'trees', instanced: im }));
   }
-  return { meshes, n: near.length + far.length, near, far, towers: towerSpots, s2, tints: TINTS };
+  for (let k = trees.length; k < treesBefore; k++) R();
+  return { meshes, n: near.length + far.length, near, far, towers: towerSpots };
 }
 function mergeSimple(list) {
   const pos = [], nor = [], uv = [];
@@ -587,6 +590,7 @@ function buildLights(world, R, sprawl, sky) {
   out.push(points(world, [...sky.bridgeLights.map(([x, y, z, t]) => [x, y, z, t ? [1, 0.15, 0.1] : [0.95, 0.95, 1], 2.4, -1]), ...sky.air.map(([x, y, z, t]) => [x, y, z, t === 3 ? [1, 0.2, 0.12] : [1, 0.85, 0.6], 5])], { far: true, name: 'farLights', size: 1.4, min: 1.6, I: 1.3 }));
   // near sprawl: a few street lamps per block front + tower windows are in the shader
   const lamps = []; for (const b of sprawl.near) if (R() < 0.35) lamps.push([b.x0 + (b.x1 - b.x0) * R(), 7, (b.z0 + b.z1) / 2 + ((b.z0 + b.z1) / 2 > 0 ? 1 : -1) * 0, [1, 0.62, 0.3], 3]);
+  { const keep = lamps.filter((l) => !inS2(l[0], l[2])); lamps.length = 0; lamps.push(...keep); }   // S2: its sprawl boxes are gone (after the R() draws)
   // the scene's own lamps: globe / lens / bulb meshes → cluster centres
   const lampMats = new Set([M.lampLens, M.lampHead].filter(Boolean)); const bulbMat = M.bulb;
   const cl = new Map(); const v = new THREE.Vector3();
