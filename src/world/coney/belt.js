@@ -153,7 +153,7 @@ export function buildBelt(world) {
   for (const [m, list] of G) { const merged = mergeGeometries(list, false); if (!merged) { console.warn('[belt] merge failed', m.name || m.color?.getHexString?.()); continue; } const mesh = new THREE.Mesh(merged, m); mesh.castShadow = m !== M.water && m !== M.streets; mesh.receiveShadow = true; root.add(mesh); }
 
   // ---- traffic: a dozen cars lapping in the three lanes ----
-  { const n = ctx.safeMode ? 4 : ctx.lite ? 8 : 16; for (let i = 0; i < n; i++) { const k = (i * 7) % 10, kind = k < 4 ? 'sedan' : k < 6 ? 'suv' : k < 8 ? 'cab' : 'van';
+  { const n = ctx.safeMode ? 4 : ctx.lite ? 8 : 16; for (let i = 0; i < n; i++) { const k = (i * 7) % 10, kind = k < 3 ? 'sedan' : k < 4 ? 'bmw-m4' : k < 6 ? 'suv' : k < 8 ? 'cab' : 'van';
       Z.traffic.push({ kind, p: new THREE.Vector3(), lane: i % 3, s: (i * PER / n + (i % 3) * 23) % PER, v: 19 + (i % 5) * 2.4,
         color: kind === 'cab' ? new THREE.Color(i % 3 ? 0xf2b820 : 0x8cd04a) : kind === 'van' ? new THREE.Color(0xf2f2ee) : CAR_COLORS[(i * 5) % CAR_COLORS.length] }); }
     Z.carIM = trafficMeshes(root, Z.traffic, !ctx.lite);

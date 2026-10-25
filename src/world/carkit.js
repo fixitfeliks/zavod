@@ -25,17 +25,20 @@ const KINDS = {
   volga: { len: 4.73, w: 1.8, clr: 0.18, belt: 0.93, roof: 1.48, hood: 0.88, ws: [0.8, 0.24], rs: [-0.95, -1.45], wheels: [1.4, -1.4], b: [-0.2], trunk: 0.93, boxy: true },
   moskvich: { len: 4.1, w: 1.55, clr: 0.18, belt: 0.93, roof: 1.45, hood: 0.87, ws: [0.6, 0.1], rs: [-0.7, -1.2], wheels: [1.2, -1.2], b: [-0.2], trunk: 0.92, boxy: true },
   van:   { len: 5.2, w: 1.98, clr: 0.24, belt: 1.12, roof: 2.08, hood: 1.02, ws: [1.72, 1.2], rs: [-2.5, -2.58], wheels: [1.68, -1.72], b: [0.7], trunk: 1.12, panel: true },
+  // Real-model kinds (see carmodels.js KIT): procedural specs below are only the fallback body shown before each
+  // model loads, or for good if it fails to - so they just need to be a plausible stand-in at the model's own length.
+  'bmw-m4': { len: 4.06, w: 1.68, clr: 0.16, belt: 0.84, roof: 1.3, hood: 0.78, ws: [0.65, -0.1], rs: [-0.8, -1.5], wheels: [1.35, -1.3], b: [-0.1], trunk: 0.88, sport: true },
 };
 for (const k of ['cab', 'van', 'lada', 'volga', 'moskvich']) KINDS[k].rimStyle = 'steel';   // fleet / Soviet: steel wheels, hubcaps
-for (const k of ['coupe', 'muscle', 'suv']) KINDS[k].rimStyle = 'multi';
+for (const k of ['coupe', 'muscle', 'suv', 'bmw-m4']) KINDS[k].rimStyle = 'multi';
 export const CAR_KINDS = Object.keys(KINDS);
 const ARCH_GAP = 0.07, WHEEL_INSET = 0.13;   // arch radius over the tyre's; tyre centre in from the body side
 const tyreR = (K) => (K.clr > 0.25 ? 0.37 : 0.345);
 const isLite = () => typeof window !== 'undefined' && !!window.__zavodLite;
-/** Coney's parked mix: the sedan (the real Sloyd model, not a procedural body) is the primary car, about 8 in 18 (~44%); two
- *  E34s in 18 (~11%). Phones swap the muscle car for a sedan, so the E34 costs no extra kind (each kind in a placeCars call
- *  is its own set of instanced draws). pick(R) draws one kind. */
-const PARK_MIX = ['sedan', 'sedan', 'sedan', 'e34', 'suv', 'hatch', 'sedan', 'van', 'cab', 'coupe', 'muscle', 'sedan', 'sedan', 'e34', 'suv', 'hatch', 'sedan', 'sedan'];
+/** Coney's parked mix: real models (not a procedural body) are the primary cars - the sedan pool (Sloyd sedan, BMW
+ *  M4) together about 9 in 18 (~50%); two E34s in 18 (~11%). Phones swap the muscle car for a sedan, so the E34
+ *  costs no extra kind (each kind in a placeCars call is its own set of instanced draws). pick(R) draws one kind. */
+const PARK_MIX = ['sedan', 'sedan', 'bmw-m4', 'e34', 'suv', 'hatch', 'sedan', 'van', 'cab', 'coupe', 'muscle', 'sedan', 'bmw-m4', 'e34', 'suv', 'hatch', 'sedan', 'sedan'];
 export function parkMix(ctx, mix = PARK_MIX) { const m = mix.map((k) => (ctx?.lite && k === 'muscle' ? 'sedan' : k)); return (R) => m[(R() * m.length) | 0]; }
 export function carSpec(kind) { return KINDS[kind]; }
 

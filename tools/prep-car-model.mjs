@@ -3,6 +3,7 @@
 // @gltf-transform/extensions@4 meshoptimizer), macOS (it uses sips to average / resize textures):
 //   node prep-car-model.mjs car <innerscene.glb> <out.glb> <triangle budget: 30000 desktop, 8000 for -lite>
 //   node prep-car-model.mjs sloyd <sloyd.glb> <out.glb> <triangle budget: 25000 desktop, 7000 for -lite>
+//   node prep-car-model.mjs blend <convert_blend.py output.glb> <out.glb> <triangle budget> <target length m>
 // Output GLB (kit frame: +x front, y up, ground 0, centred; +z = right / kerb side), nodes:
 //   body-<cls> / interior-<cls> / sign-<cls> / pane-<name> / wheel-<cls> (one wheel at the origin, axle along z, outer face +z)
 // cls = paint | dark | metal | lamp | glass (flat vertex colours, textures averaged away) for `car` / `bus`; `sloyd` keeps the
@@ -32,6 +33,111 @@ await MeshoptEncoder.ready; await MeshoptSimplifier.ready;
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({ 'meshopt.encoder': MeshoptEncoder });
 
 if (cfgName === 'sloyd') { await prepSloyd(inFile, outFile, TARGET); fs.rmSync(TMP, { recursive: true, force: true }); process.exit(0); }
+// ---- blend: a multi-object, multi-material Blender export (convert_blend.py), not the single-mesh Sloyd/taxi shape --------
+// Unlike `car` / `bus`, orientation isn't a fixed per-source map: it's read from the model (the longer of the two
+// horizontal extents is the length axis; front/rear-named parts say which end is +x). Wheels aren't split out to spin -
+// a Blender kit car's "tyre" geometry is typically one object mirrored into all four corners (a single disconnected-
+// island template, like Sloyd's, isn't there to find), so they stay static, baked into the body they're part of.
+if (cfgName === 'blend') { await prepBlend(inFile, outFile, TARGET, +process.argv[6]); fs.rmSync(TMP, { recursive: true, force: true }); process.exit(0); }
+async function prepBlend(inFile, outFile, targetTris, targetLen) {
+  const doc = await io.read(inFile);
+  const scene = doc.getRoot().getDefaultScene() || doc.getRoot().listScenes()[0];
+  const classify = (mat, nodeName) => {
+    const n = (mat?.getName() || '').toLowerCase();
+    if (/glass|glazing/.test(n)) return 'glass';
+    if (/paint/.test(n)) return 'paint';
+    if (/lens|lamp|tail|indicat/.test(n)) return 'lamp';
+    if (/chrome|steel|alumin|brass|rim(?!_screw)/.test(n)) return 'metal';
+    void nodeName; return 'dark';
+  };
+  const parts = [];
+  scene.traverse((node) => {
+    const mesh = node.getMesh(); if (!mesh) return;
+    const M = node.getWorldMatrix();
+    for (const prim of mesh.listPrimitives()) {
+      const P = prim.getAttribute('POSITION'), N = prim.getAttribute('NORMAL'), I = prim.getIndices();
+      const n = P.getCount(), pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), v = [0, 0, 0], w = [0, 0, 0];
+      for (let i = 0; i < n; i++) {
+        P.getElement(i, v);
+        pos[i * 3] = M[0] * v[0] + M[4] * v[1] + M[8] * v[2] + M[12]; pos[i * 3 + 1] = M[1] * v[0] + M[5] * v[1] + M[9] * v[2] + M[13]; pos[i * 3 + 2] = M[2] * v[0] + M[6] * v[1] + M[10] * v[2] + M[14];
+        if (N) { N.getElement(i, w); const nx = M[0] * w[0] + M[4] * w[1] + M[8] * w[2], ny = M[1] * w[0] + M[5] * w[1] + M[9] * w[2], nz = M[2] * w[0] + M[6] * w[1] + M[10] * w[2], L = Math.hypot(nx, ny, nz) || 1; nor[i * 3] = nx / L; nor[i * 3 + 1] = ny / L; nor[i * 3 + 2] = nz / L; }
+      }
+      let idx = I ? Uint32Array.from(I.getArray()) : Uint32Array.from({ length: n }, (_, i) => i);
+      const det = M[0] * (M[5] * M[10] - M[6] * M[9]) - M[4] * (M[1] * M[10] - M[2] * M[9]) + M[8] * (M[1] * M[6] - M[2] * M[5]);
+      const cls = classify(prim.getMaterial(), node.getName());
+      // a Cycles-only material graph (no Principled BSDF base colour) exports with baseColorFactor stuck at the
+      // default white regardless of how the part actually looks (true here for nearly every material on this car -
+      // checked by hand), so colorOf(mat) can't be trusted the way it is for `car` / `bus`: use a flat colour per
+      // class instead, the same trade `paint` (tinted per instance anyway) already makes.
+      const FALLBACK_COLOR = { dark: [0.035, 0.035, 0.04], metal: [0.68, 0.7, 0.73], lamp: [0.85, 0.8, 0.62], glass: [1, 1, 1] };
+      parts.push({ name: node.getName(), cls, color: FALLBACK_COLOR[cls] || [1, 1, 1], pos, nor, idx, det });
+    }
+  });
+  const bbOf = (p) => { const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; for (let i = 0; i < p.length; i += 3) for (let k = 0; k < 3; k++) { b[k] = Math.min(b[k], p[i + k]); b[k + 3] = Math.max(b[k + 3], p[i + k]); } return b; };
+  for (const p of parts) p.bb = bbOf(p.pos);
+  const all = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (const p of parts) for (let k = 0; k < 3; k++) { all[k] = Math.min(all[k], p.bb[k]); all[k + 3] = Math.max(all[k + 3], p.bb[k + 3]); }
+
+  // ---- orient: the longer horizontal extent (glTF export is already y-up) is the length axis; front/rear-named parts say which end is +x
+  const lenIsX = (all[3] - all[0]) >= (all[5] - all[2]);
+  const FRONT = /front|headlight|hood|bonnet/i, REAR = /rear|back|boot|trunk|spoiler|tail/i;
+  const axisPos = (p) => { const c = [(p.bb[0] + p.bb[3]) / 2, 0, (p.bb[2] + p.bb[5]) / 2]; return lenIsX ? c[0] : c[2]; };
+  const fronts = parts.filter((p) => FRONT.test(p.name)), rears = parts.filter((p) => REAR.test(p.name));
+  const avg = (list) => list.length ? list.reduce((s, p) => s + axisPos(p), 0) / list.length : 0;
+  const sign = (fronts.length && rears.length && avg(fronts) < avg(rears)) ? -1 : 1;   // front should end up at +x; default +1 with no hints either way
+  const mapDet = (lenIsX ? 1 : -1) * sign;
+  for (const p of parts) {
+    const d = p.det * mapDet;
+    for (let i = 0; i < p.pos.length; i += 3) {
+      const x = p.pos[i], z = p.pos[i + 2], nx = p.nor[i], nz = p.nor[i + 2];
+      if (lenIsX) { p.pos[i] = sign * x; } else { p.pos[i] = sign * z; p.pos[i + 2] = x; }
+      if (lenIsX) { p.nor[i] = sign * nx; } else { p.nor[i] = sign * nz; p.nor[i + 2] = nx; }
+    }
+    if (d < 0) for (let t = 0; t < p.idx.length; t += 3) { const s = p.idx[t + 1]; p.idx[t + 1] = p.idx[t + 2]; p.idx[t + 2] = s; }
+    p.bb = bbOf(p.pos);
+  }
+  const all2 = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (const p of parts) for (let k = 0; k < 3; k++) { all2[k] = Math.min(all2[k], p.bb[k]); all2[k + 3] = Math.max(all2[k + 3], p.bb[k + 3]); }
+  const curLen = all2[3] - all2[0], k = (targetLen || curLen) / (curLen || 1);
+  const off = [-(all2[0] + all2[3]) / 2, -all2[1], -(all2[2] + all2[5]) / 2];
+  for (const p of parts) { for (let i = 0; i < p.pos.length; i += 3) { p.pos[i] = (p.pos[i] + off[0]) * k; p.pos[i + 1] = (p.pos[i + 1] + off[1]) * k; p.pos[i + 2] = (p.pos[i + 2] + off[2]) * k; } p.bb = bbOf(p.pos); }
+  const finalAll = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (const p of parts) for (let kk = 0; kk < 3; kk++) { finalAll[kk] = Math.min(finalAll[kk], p.bb[kk]); finalAll[kk + 3] = Math.max(finalAll[kk + 3], p.bb[kk + 3]); }
+
+  // ---- bucket by material class only - no wheel / pane split (see header): one body-<cls> draw per class --------------
+  const buckets = new Map(); const put = (key, p) => { let b = buckets.get(key); if (!b) buckets.set(key, (b = [])); b.push(p); };
+  for (const p of parts) {
+    if (/tread segment|hex lug|parking sensor/i.test(p.name)) continue;   // sub-centimetre detail, invisible past arm's length
+    put('body-' + p.cls, p);
+  }
+  const totalTris = parts.reduce((s, p) => s + p.idx.length / 3, 0);
+  const ratio = Math.min(1, targetTris / totalTris);
+  const out = new Document(); const buf = out.createBuffer(); const root = out.createScene('car'); out.getRoot().setDefaultScene(root);
+  const mats = {};
+  const matOf = (cls) => mats[cls] || (mats[cls] = out.createMaterial(cls).setBaseColorFactor([1, 1, 1, 1]).setRoughnessFactor(cls === 'metal' ? 0.3 : 0.6).setMetallicFactor(cls === 'metal' ? 0.9 : 0.1));
+  let outTris = 0;
+  for (const [key, list] of buckets) {
+    let nv = 0, ni = 0; for (const p of list) { nv += p.pos.length / 3; ni += p.idx.length; }
+    const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), col = new Float32Array(nv * 3); let idx = new Uint32Array(ni); let vo = 0, io2 = 0;
+    for (const p of list) { const n = p.pos.length / 3; pos.set(p.pos, vo * 3); nor.set(p.nor, vo * 3); for (let i = 0; i < n; i++) col.set(p.color, (vo + i) * 3); for (let i = 0; i < p.idx.length; i++) idx[io2 + i] = p.idx[i] + vo; vo += n; io2 += p.idx.length; }
+    if (ratio < 0.98 && idx.length > 300) {
+      const want = Math.max(36, Math.floor(idx.length * ratio / 3) * 3);
+      let s = MeshoptSimplifier.simplify(idx, pos, 3, want, 0.05, [])[0];
+      if (s.length > want * 1.3) s = MeshoptSimplifier.simplifySloppy(idx, pos, 3, null, want, 0.08)[0];
+      idx = s;
+    }
+    outTris += idx.length / 3;
+    const acc = (arr, type) => out.createAccessor().setArray(arr).setType(type).setBuffer(buf);
+    const prim = out.createPrimitive().setAttribute('POSITION', acc(pos, 'VEC3')).setAttribute('NORMAL', acc(nor, 'VEC3')).setAttribute('COLOR_0', acc(col, 'VEC3')).setIndices(acc(idx, 'SCALAR'));
+    prim.setMaterial(matOf(key.split('-')[1]));
+    root.addChild(out.createNode(key).setMesh(out.createMesh(key).addPrimitive(prim)));
+  }
+  root.setExtras({ wheels: [], r: 0.33, len: +(finalAll[3] - finalAll[0]).toFixed(3), w: +(finalAll[5] - finalAll[2]).toFixed(3), h: +(finalAll[4] - finalAll[1]).toFixed(3) });
+  await out.transform(weld(), meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
+  out.createExtension(EXTMeshoptCompression).setRequired(true).setEncoderOptions({ method: EXTMeshoptCompression.EncoderMethod.QUANTIZE });
+  await io.write(outFile, out);
+  console.log(outFile, 'tris in', totalTris, 'out', outTris, 'buckets', [...buckets.keys()].join(' '), 'extras', JSON.stringify(root.getExtras()), 'bytes', fs.statSync(outFile).size);
+}
 
 // ---- sloyd: a single textured trimesh (no named parts, no vertex colours) --------------------------------------------
 // Sloyd generator cars are one mesh, one material, one baked texture, front along +z, up +y, width along x (a Blender-ish

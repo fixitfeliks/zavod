@@ -12,7 +12,7 @@ import { carGeometries, carMaterials, carInterior, carEye, wheelGeometry, wheelL
 import { buildBus } from '../src/vehicles/bus.js';
 import { loadCarModels, onCarModel, carModel } from '../src/world/carmodels.js';
 // the street models (world/carmodels.js KIT) as kinds of their own: 'sedan@model' (parked and traffic only: a driven car is the kit build)
-const MODEL_KINDS = ['sedan'], modelsIn = new Set(); window.__zavodAssetBase = '../';
+const MODEL_KINDS = ['sedan', 'bmw-m4'], modelsIn = new Set(); window.__zavodAssetBase = '../';
 loadCarModels({ lite: false }); onCarModel((k) => modelsIn.add(k));
 const W = +(new URLSearchParams(location.search).get('w') || 640), H = Math.round(W * 0.625);   // ?w=1280: bigger close-up shots
 const r = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true }); r.setSize(W, H); r.setPixelRatio(1); r.toneMapping = THREE.ACESFilmicToneMapping; r.outputColorSpace = THREE.SRGBColorSpace; document.body.appendChild(r.domElement);

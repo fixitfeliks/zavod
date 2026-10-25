@@ -1,0 +1,16 @@
+CC BY 3.0 (Creative Commons Attribution 3.0 Unported) - FAN ART, NON-COMMERCIAL ONLY
+
+The source model ("BMW M4", Blend Swap blend #81957) was released by CuRvEmAsTeR under CC BY 3.0:
+https://creativecommons.org/licenses/by/3.0/
+
+Blend Swap marks this blend as Fan Art: it may not be used for any commercial purpose under any
+circumstance. This depicts a real BMW design, name and badges, which are not licensed by this grant;
+the model must be removed if ZAVOD is ever monetised.
+
+Required attribution:
+"BMW M4" by CuRvEmAsTeR (https://blendswap.com/profile/45652), Blend Swap blend #81957
+(https://www.blendswap.com/blends/view/81957), licensed under CC BY 3.0
+(https://creativecommons.org/licenses/by/3.0/).
+
+The converted files in this folder (bmw-m4.glb, bmw-m4-lite.glb) carry the same licence, the same
+non-commercial / fan-art restriction, and the same attribution requirement.

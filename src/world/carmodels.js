@@ -8,11 +8,14 @@
 // Sloyd, CC BY 4.0 (assets/models/sloyd-sedan/SOURCE.md). Converted offline (tools/prep-car-model.mjs) into the kit frame
 // (body-tex, keeping the source's one baked texture; the wheels are part of it too, not split out - see SOURCE.md on why -
 // so the per-instance paint tint multiplies the whole thing, wheels included; carkit.js's SLOYD_SEDAN_COLORS is a small
-// near-neutral palette chosen so that doesn't discolour the tyres and glass). They load a few seconds after the first frame
-// (the procedural carkit body stands in until then, and for good if a load fails): parked rows and traffic swap to them
-// through onCarModel(). A car that goes live (driven, stolen, shot) stays the carkit build: its split panels, doors,
-// roll-down panes and cabin are what vehicledamage.js, the Uber and the windows work on (this model has no separate glass
-// or interior to drive with).
+// near-neutral palette chosen so that doesn't discolour the tyres and glass). bmw-m4 = "BMW M4" by CuRvEmAsTeR, CC BY 3.0,
+// fan art / non-commercial only (assets/models/bmw-m4/SOURCE.md - remove before ZAVOD is ever monetised); converted the
+// same way (tools/prep-car-model.mjs `blend` mode) into flat vertex-coloured body-<cls> buckets instead of a baked texture,
+// wheels also static (its rim/tyre geometry covers all four positions in one mirrored mesh, no single template to split
+// out). They load a few seconds after the first frame (the procedural carkit body stands in until then, and for good if a
+// load fails): parked rows and traffic swap to them through onCarModel(). A car that goes live (driven, stolen, shot)
+// stays the carkit build: its split panels, doors, roll-down panes and cabin are what vehicledamage.js, the Uber and the
+// windows work on (these models have no separate glass or interior to drive with).
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
@@ -25,8 +28,8 @@ const M = {};   // kind -> { root: Group (normalised), parts: [{ geo, mat, m4, b
 let loading = null;
 // kind -> file. sedan = the Sloyd model (see SOURCE.md); textured: true keeps its own baked texture instead of the shared
 // flat-colour kit palette. *-lite.glb: the ~7k-triangle cut for phones.
-const KIT = { sedan: { file: 'sloyd-sedan', textured: true } };
-const KIT_LITE = ['sedan'];
+const KIT = { sedan: { file: 'sloyd-sedan', textured: true }, 'bmw-m4': { file: 'bmw-m4' } };
+const KIT_LITE = ['sedan', 'bmw-m4'];
 /** this kind has a street model coming (load started, not necessarily in yet) */
 export const kitModelPending = (kind, ctx) => !!KIT[kind] && (!ctx?.lite || KIT_LITE.includes(kind)) && !!loading;
 const ready = [];   // onCarModel listeners
