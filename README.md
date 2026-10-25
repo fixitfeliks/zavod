@@ -34,5 +34,7 @@ Query params: `?map=`, `?primary=&secondary=`, `?quality=ultra|high|medium|low`,
 Assets: Poly Haven (CC0), three.js example soldier, Microsoft Rocketbox avatars + animations (MIT, converted to GLB), Barlow (OFL). Non-commercial tech demo.
 
 ## Credits
+### 3D model credits
+- Sedan: "A Red Mid-sized Four-door Sedan, 1990s To Early 2000s" by TopoSphere, generated with [Sloyd](https://www.sloyd.ai/free-3d-models/model/a-red-mid-sized-four-door-sedan-1990s-to-early-2000s-04dtwkw5), CC BY 4.0 (`assets/models/sloyd-sedan/`).
 - Ferrari 458 Italia model by [vicent091036](https://sketchfab.com/models/57bf6cc56931426e87494f554df1dab6), CC-BY 4.0, via the three.js examples (`assets/models/cars/ferrari.glb`).
 - Map data (c) [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, available under the Open Database License (ODbL 1.0): the Coney Island streets, rails and buildings (`src/world/coney/osm.js`, `streetnames.js`) and the buildings round the Neptune Av station (`src/world/coney/osm-neptune.js`, made by `tools/import-osm-area.mjs`).

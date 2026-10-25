@@ -17,8 +17,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OSM } from './osm.js';
 import { BW } from './shore.js';
-import { carGeometries, carMaterials, carSpec, carEye, carInterior, wheelGeometry, wheelLayout, CAR_COLORS, hideParkedCar, carBoxes } from '../carkit.js';
-import { hasCarModel, carModel } from '../carmodels.js';
+import { carGeometries, carMaterials, carSpec, carEye, carInterior, wheelGeometry, wheelLayout, CAR_COLORS, SLOYD_SEDAN_COLORS, hideParkedCar, carBoxes } from '../carkit.js';
+import { hasCarModel, carModel, isKitModel, instanceCarModel, onCarModel, kitWheels } from '../carmodels.js';
 import { buildPerson, peopleReady } from '../people.js';
 import { BoxGrid, rectBlocked } from '../../vehicles/collide.js';
 import { hangkit as HK } from '../hangkit.js';
@@ -253,7 +253,7 @@ function kindRender(kind, cap) {
     const im = new THREE.InstancedMesh(G[slot], mats[slot], cap); im.name = `traffic:${kind}:${slot}`; im.frustumCulled = false;
     im.castShadow = slot === 'paint' && !lite; im.receiveShadow = slot !== 'shadow'; im.userData.surface = 'metal';
     for (let i = 0; i < cap; i++) im.setMatrixAt(i, ZERO);
-    if (slot === 'paint') { for (let i = 0; i < cap; i++) im.setColorAt(i, CAR_COLORS[0]); out.paint = im; }
+    if (slot === 'paint') { const c0 = kind === 'sedan' ? SLOYD_SEDAN_COLORS[0] : CAR_COLORS[0]; for (let i = 0; i < cap; i++) im.setColorAt(i, c0); out.paint = im; }
     if (slot === 'shadow') im.renderOrder = 1;
     scene.add(im); out.ims.push(im);
   }
@@ -265,10 +265,23 @@ function kindRender(kind, cap) {
     for (const im of [shell, inside]) { im.frustumCulled = false; im.name = `traffic:${kind}:cabin`; for (let i = 0; i < cap; i++) im.setMatrixAt(i, ZERO); scene.add(im); out.ims.push(im); }
   }
   const lay = wheelLayout(kind), HW = K.w / 2, xf = K.len / 2, xr = -K.len / 2;
-  out.wheels = lay.wheels; out.wr = lay.r; out.wb = K.wheels[0] - K.wheels[1];
+  out.wheels = lay.wheels; out.lite = lite; out.wr = lay.r; out.wb = K.wheels[0] - K.wheels[1];
   out.lamps = { tail: [xr - 0.02, K.trunk - 0.12, HW * 0.9 - 0.27], head: [xf + 0.02, K.hood - 0.13, HW * 0.9 - 0.3] };
   out.eye = carEye(kind); out.hl = K.len / 2; out.hw = K.w / 2; out.roof = K.roof; out.belt = K.belt;
   return out;
+}
+/** a kind's street model just loaded (world/carmodels.js): its instanced parts take over the kit body's slots, and its own
+ *  template wheel (R.kw, four a car) replaces the shared kit wheels for those cars */
+function trafficModel(kind, R) {
+  if (!R || R.kw || R.model || !R.cap || !isKitModel(kind)) return;
+  const scene = T.world.scene, Z = Array.from({ length: R.cap }, () => ZERO), cols = Z.map((_, i) => { const c = new THREE.Color(); R.paint?.getColorAt(i, c); return c; });
+  const ims = instanceCarModel(kind, Z, cols, scene); if (!ims) return;
+  const body = ims.filter((im) => !im.userData.per), wheels = ims.filter((im) => im.userData.per);
+  for (const im of body) { im.name = `traffic:${kind}:model`; for (let i = 0; i < R.cap; i++) { R.ims[0].getMatrixAt(i, _m); im.setMatrixAt(i, _m); } im.instanceMatrix.needsUpdate = true; im.castShadow = im.castShadow && !R.lite; }
+  for (const im of R.ims) { im.removeFromParent(); im.dispose(); }
+  R.ims = body; R.paint = body.find((im) => im.instanceColor) || null; R.kw = { ims: wheels, wheels: kitWheels(kind) };
+  for (const c of T.cars) if (c.R === R) for (let k = 0; k < 4; k++) for (const im of T.wheels) im.setMatrixAt(c.id * 4 + k, ZERO);
+  for (const im of T.wheels) im.instanceMatrix.needsUpdate = true;
 }
 function glowTex() {
   const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d'); const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
@@ -305,8 +318,10 @@ export function buildTraffic(world) {
   T.shellMat = new THREE.MeshStandardMaterial({ color: 0x3a3733, roughness: 0.9, side: THREE.BackSide }); T.shellMat.name = 'traffic_shell';
   T.cabMat = new THREE.MeshStandardMaterial({ color: 0x232221, roughness: 0.75 }); T.cabMat.name = 'traffic_cabin';
   // the fleet: fixed kinds per pool slot (each slot = one instance in its kind's meshes)
-  // E34s: 2 in the phone's 10 (it takes the hatch's place: same kind count, same draw calls), 4 in the desktop's 24
-  const mix = lite ? ['sedan', 'suv', 'cab', 'sedan', 'e34', 'suv', 'van', 'sedan', 'cab', 'e34'] : ['sedan', 'suv', 'cab', 'e34', 'hatch', 'suv', 'van', 'e34', 'cab', 'muscle', 'sedan', 'suv', 'hatch', 'e34', 'sedan', 'coupe', 'suv', 'van', 'sedan', 'hatch', 'e34', 'muscle', 'suv', 'sedan'];
+  // the sedan (the real Sloyd model) is traffic's primary car: about half of the lite pool, about 40% of the desktop one;
+  // E34: 1 in the phone's 10, 3 in the desktop's 24
+  const mix = lite ? ['sedan', 'sedan', 'suv', 'cab', 'sedan', 'e34', 'suv', 'van', 'sedan', 'sedan']
+    : ['sedan', 'suv', 'cab', 'sedan', 'e34', 'hatch', 'sedan', 'van', 'cab', 'sedan', 'muscle', 'suv', 'sedan', 'e34', 'hatch', 'sedan', 'coupe', 'suv', 'sedan', 'e34', 'sedan', 'sedan', 'suv', 'sedan'];
   const kinds = []; for (let i = 0; i < budget; i++) kinds.push(mix[i % mix.length]);
   const count = {}; for (const k of kinds) count[k] = (count[k] || 0) + 1;
   const model = !lite && hasCarModel('coupe');
@@ -346,6 +361,7 @@ export function buildTraffic(world) {
   // F at a driver's door: carjack (hangkit decides between this and every other F prompt nearby)
   T.spotPos = new THREE.Vector3(0, -999, 0);
   try { HK.spot({ pos: T.spotPos, r: 1.9, dy: 1.6, when: () => !!T.jackable, prompt: () => (T.jackable?.driver && T.jackable.state !== 'dead' ? 'F — CARJACK' : 'F — DRIVE'), act: () => { if (T.jackable) jack(T.jackable); } }); } catch (e) { console.warn('[traffic] spot', e?.message || e); }
+  onCarModel((k) => { try { trafficModel(k, T.kinds[k]); } catch (e) { console.warn('[traffic] model', k, e?.message || e); } });
   try { buildBuses(world); } catch (e) { console.warn('[traffic] buses', e); }
   try { buildEbikeTraffic(world); } catch (e) { console.warn('[traffic] ebikes', e); }
   world.updaters.push((dt) => { try { update(dt); } catch (e) { if ((T.errN = (T.errN || 0) + 1) < 4) console.error('[traffic]', e); } });
@@ -439,7 +455,7 @@ function spawn(c, boot) {
     if (solidsNear(c.x, c.z, 8).some((o) => obbOverlap(c.x, c.z, c.h, c.hl + 1.5, c.hw, o))) continue;   // clear of every vehicle (cops, the Uber, you, parked)
     c.v = Math.min(roadSpeed(seg.w) * 0.7, 7); c.state = 'drive'; c.stateT = 0; c.driver = true; c.shift = 0; c.shiftT = 0; c.ox = c.oz = c.oyaw = 0; c.avoid = null; c.panic = 0; c.hornT = 0; c.blockT = 0; c.waitT = 0; c.jamT = 0; c.brake = 0;
     c.pers = 0.85 + rng() * 0.3; c.seed = (rng() * 1e6) | 0;
-    c.color.copy(c.kind === 'cab' ? new THREE.Color(rng() < 0.4 ? 0x8cd04a : 0xf2b820) : CAR_COLORS[(rng() * CAR_COLORS.length) | 0]);   // cabs: yellow, or an apple-green boro taxi
+    c.color.copy(c.kind === 'cab' ? new THREE.Color(rng() < 0.4 ? 0x8cd04a : 0xf2b820) : c.kind === 'sedan' ? SLOYD_SEDAN_COLORS[(rng() * SLOYD_SEDAN_COLORS.length) | 0] : CAR_COLORS[(rng() * CAR_COLORS.length) | 0]);   // cabs: yellow, or an apple-green boro taxi; the sedan model: its own small, near-neutral palette (see carkit.js)
     if (c.R.paint) { c.R.paint.setColorAt(c.slot, c.color); c.R.paint.instanceColor.needsUpdate = true; }
     if (c.model) { c.model.visible = true; c.color.setHex([0xb3120f, 0xe8b400, 0xf2f2f0, 0x111214, 0x1f4fb8][(rng() * 5) | 0]); if (c.modelPaint) c.modelPaint.color.copy(c.color); }
     c.shirt = (rng() * SHIRTS.length) | 0; c.skin = (rng() * SKINS.length) | 0;
@@ -454,6 +470,7 @@ function despawn(c) {
   const R = c.R; if (R.ims) for (const im of R.ims) { im.setMatrixAt(c.slot, ZERO); im.instanceMatrix.needsUpdate = true; }
   if (c.model) c.model.visible = false;
   for (let k = 0; k < 4; k++) for (const im of T.wheels) im.setMatrixAt(c.id * 4 + k, ZERO);
+  if (R.kw) for (const im of R.kw.ims) { for (let k = 0; k < 4; k++) im.setMatrixAt(c.slot * 4 + k, ZERO); im.instanceMatrix.needsUpdate = true; }
   for (let k = 0; k < 6; k++) T.glow.setMatrixAt(c.id * 6 + k, ZERO);
   T.silB.setMatrixAt(c.id, ZERO); T.silH.setMatrixAt(c.id, ZERO);
   c.hbBody.position.set(0, -500, 0); c.hbDrv.position.set(0, -500, 0); c.hbBody.updateMatrixWorld(); c.hbDrv.updateMatrixWorld();
@@ -722,10 +739,12 @@ function render(dt) {
     if (!c.model) {
       _q2.setFromAxisAngle(UP, c.h + Math.PI / 2); _m2.compose(_p, _q2, ONE);
       const kap = c.v > 0.5 ? -c.yawRate / c.v : 0, steer = clamp(Math.atan(R.wb * kap), -0.6, 0.6), sc = (R.wr || 0.33) / 0.33;
-      R.wheels.forEach((w, k) => {
+      const kw = R.kw, ims = kw ? kw.ims : T.wheels, base = kw ? c.slot * 4 : c.id * 4;   // a street model: its own wheels, where its arches are, at full size
+      if (kw) _s.copy(ONE); else _s.set(sc, sc, 1);
+      (kw ? kw.wheels : R.wheels).forEach((w, k) => {
         const yaw = (w.x > 0 ? -steer : 0) + (w.side < 0 ? Math.PI : 0); _q.setFromAxisAngle(UP, yaw); _q2.setFromAxisAngle(ZAX, w.side > 0 ? -c.spin : c.spin); _q.multiply(_q2);
-        _s.set(sc, sc, 1); _v.set(w.x, w.y, w.z); _m.compose(_v, _q, _s).premultiply(_m2);
-        for (const im of T.wheels) im.setMatrixAt(c.id * 4 + k, _m);
+        _v.set(w.x, w.y, w.z); _m.compose(_v, _q, _s).premultiply(_m2);
+        for (const im of ims) im.setMatrixAt(base + k, _m);
       });
     }
     // lamps: tails (brake bright / night dim), heads at night, the blinker on the turn side before a junction
@@ -753,7 +772,7 @@ function render(dt) {
     if (c.driver && c.state !== 'abandoned') { _v.set(R.eye.x - 0.1, R.eye.y - 0.35, R.eye.z).applyMatrix4(_m2); c.hbDrv.position.copy(_v); c.hbDrv.rotation.y = c.h; } else c.hbDrv.position.set(0, -500, 0);
     c.hbDrv.updateMatrixWorld();
   }
-  for (const R of Object.values(T.kinds)) if (R.ims) for (const im of R.ims) im.instanceMatrix.needsUpdate = true;
+  for (const R of Object.values(T.kinds)) { if (R.ims) for (const im of R.ims) im.instanceMatrix.needsUpdate = true; if (R.kw) for (const im of R.kw.ims) im.instanceMatrix.needsUpdate = true; }
   for (const im of T.wheels) im.instanceMatrix.needsUpdate = true;
   T.glow.instanceMatrix.needsUpdate = true; if (T.glow.instanceColor) T.glow.instanceColor.needsUpdate = true;
   T.silB.instanceMatrix.needsUpdate = T.silH.instanceMatrix.needsUpdate = true;

@@ -48,7 +48,7 @@
 import * as THREE from 'three';
 import { createInstance } from './ai/model.js';
 import { carGeometries, carMaterials, carInterior, carEye, CAR_KINDS } from './world/carkit.js';
-import { hasCarModel, carModel } from './world/carmodels.js';
+import { hasCarModel, carModel, isKitModel } from './world/carmodels.js';
 import { buildBike } from './vehicles/bike.js';
 import { buildJetski } from './vehicles/jetski.js';
 import { buildBus } from './vehicles/bus.js';
@@ -617,7 +617,7 @@ function remoteVehicle(ctx, v) {
   if (v.k === 'bike') { try { const b = buildBike(ctx); grp.add(b.group); } catch {} return grp; }
   if (v.k === 'jetski') { try { const b = buildJetski(ctx, v.c || null); grp.add(b.group); } catch {} return grp; }
   if (v.k === 'bus') { try { const B = buildBus({ sign: 'NOT IN SERVICE', lite: !!ctx.lite }); B.group.rotation.y = Math.PI / 2; grp.add(B.group); } catch {} return grp; }
-  if (hasCarModel(v.k)) { const m = carModel(v.k, v.c || 0xb01010); if (m) { m.rotation.y = Math.PI / 2; grp.add(m); return grp; } }
+  if (hasCarModel(v.k) && !isKitModel(v.k)) { const m = carModel(v.k, v.c || 0xb01010); if (m) { m.rotation.y = Math.PI / 2; grp.add(m); return grp; } }   // street models are parked / traffic only: a driven car is the carkit build
   const kit = new THREE.Group(); kit.rotation.y = Math.PI / 2; grp.add(kit);
   const kitG = kitFor(v.k), G = kitG.geos, CM = carMaterials();
   const paint = CM.paint.clone(); paint.color = new THREE.Color(v.c || 0x22305c);

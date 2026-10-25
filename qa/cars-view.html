@@ -10,6 +10,10 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { carGeometries, carMaterials, carInterior, carEye, wheelGeometry, wheelLayout, CAR_KINDS } from '../src/world/carkit.js';
 import { buildBus } from '../src/vehicles/bus.js';
+import { loadCarModels, onCarModel, carModel } from '../src/world/carmodels.js';
+// the street models (world/carmodels.js KIT) as kinds of their own: 'sedan@model' (parked and traffic only: a driven car is the kit build)
+const MODEL_KINDS = ['sedan'], modelsIn = new Set(); window.__zavodAssetBase = '../';
+loadCarModels({ lite: false }); onCarModel((k) => modelsIn.add(k));
 const W = +(new URLSearchParams(location.search).get('w') || 640), H = Math.round(W * 0.625);   // ?w=1280: bigger close-up shots
 const r = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true }); r.setSize(W, H); r.setPixelRatio(1); r.toneMapping = THREE.ACESFilmicToneMapping; r.outputColorSpace = THREE.SRGBColorSpace; document.body.appendChild(r.domElement);
 const s = new THREE.Scene(); s.environment = new THREE.PMREMGenerator(r).fromScene(new RoomEnvironment(), 0.04).texture;
@@ -22,6 +26,7 @@ function build(kind, mode) {
   if (car) { s.remove(car); car = null; }
   const g = new THREE.Group();
   if (kind === 'bus') { const B = buildBus({ sign: 'B36|SHEEPSHEAD BAY', lite: false }); g.add(B.group); }
+  else if (kind.endsWith('@model')) g.add(carModel(kind.split('@')[0], 0x22305c));   // parked / traffic: the same parts, instanced in the game
   else if (mode === 'parked') { const G = carGeometries(kind).geos; for (const [k, geo] of Object.entries(G)) if (geo) g.add(new THREE.Mesh(geo, CM[k])); }
   else {
     const G = carGeometries(kind, { wheels: false }).geos, see = mode === 'driven';
@@ -35,7 +40,7 @@ function build(kind, mode) {
 }
 let bb = null;
 function view(az, el, dist, inside) {
-  if (inside) { const e = cur.startsWith('bus') ? { x: 5.2, y: 1.74, z: -0.72 } : carEye(cur.replace(/(parked|traffic|driven)$/, '')); cam.fov = 75; cam.position.set(e.x, e.y, e.z); cam.lookAt(e.x + Math.cos(az), e.y + Math.sin(el), e.z + Math.sin(az)); }
+  if (inside) { const e = cur.startsWith('bus') ? { x: 5.2, y: 1.74, z: -0.72 } : carEye(cur.replace(/(parked|traffic|driven)$/, '').replace('@model', '')); cam.fov = 75; cam.position.set(e.x, e.y, e.z); cam.lookAt(e.x + Math.cos(az), e.y + Math.sin(el), e.z + Math.sin(az)); }
   else { const c = bb.getCenter(new THREE.Vector3()), sz = bb.getSize(new THREE.Vector3()), d = dist || Math.max(sz.x, sz.z) * 1.35; cam.fov = 50;
     cam.position.set(c.x + Math.cos(az) * Math.cos(el) * d, Math.max(0.15, c.y + Math.sin(el) * d), c.z + Math.sin(az) * Math.cos(el) * d); cam.lookAt(c.x, c.y * 0.8, c.z); }
   cam.updateProjectionMatrix();
@@ -43,7 +48,7 @@ function view(az, el, dist, inside) {
 const px = new Uint8Array(W * H * 4), mk = new Uint8Array(W * H * 4);
 const white = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
 window.__cars = {
-  kinds: [...CAR_KINDS.filter((k) => k !== 'coupe'), 'bus'],
+  kinds: [...CAR_KINDS.filter((k) => k !== 'coupe'), 'bus', ...MODEL_KINDS.map((k) => k + '@model')],
   setup(kind, mode) { bb = build(kind, mode); return { tris: (() => { let t = 0; car.traverse((o) => { if (o.isMesh) t += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3; }); return Math.round(t); })(), draws: (() => { let n = 0; car.traverse((o) => { if (o.isMesh && o.visible) n++; }); return n; })() }; },
   pretty(az, el, inside = false) { view(az, el, 0, inside); ground.visible = true; s.background = new THREE.Color(0x8a96a3); r.render(s, cam); },
   leak(az, el, inside = false) {
@@ -67,5 +72,5 @@ window.__cars = {
     return { inMask, leak, clustered };
   },
 };
-window.__ready = true;
+(async () => { const t0 = performance.now(); while (modelsIn.size < MODEL_KINDS.length && performance.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 100)); window.__ready = true; })();
 </script>

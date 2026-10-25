@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { hasCarModel, instanceCarModel } from './carmodels.js';
+import { hasCarModel, instanceCarModel, kitModelPending, onCarModel } from './carmodels.js';
 
 const KINDS = {
   //         len   w     clear belt  roof  hood   nose(x of windshield base, top), rear(top, base), wheel x, B-pillar x, tail height
@@ -32,9 +32,10 @@ export const CAR_KINDS = Object.keys(KINDS);
 const ARCH_GAP = 0.07, WHEEL_INSET = 0.13;   // arch radius over the tyre's; tyre centre in from the body side
 const tyreR = (K) => (K.clr > 0.25 ? 0.37 : 0.345);
 const isLite = () => typeof window !== 'undefined' && !!window.__zavodLite;
-/** Coney's parked mix: two E34s in 13 (~15%). Phones swap the muscle car for a sedan, so the E34 costs no extra kind (each kind
- *  in a placeCars call is its own set of instanced draws). pick(R) draws one kind. */
-const PARK_MIX = ['sedan', 'e34', 'suv', 'hatch', 'van', 'cab', 'coupe', 'muscle', 'sedan', 'e34', 'suv', 'hatch', 'sedan'];
+/** Coney's parked mix: the sedan (the real Sloyd model, not a procedural body) is the primary car, about 8 in 18 (~44%); two
+ *  E34s in 18 (~11%). Phones swap the muscle car for a sedan, so the E34 costs no extra kind (each kind in a placeCars call
+ *  is its own set of instanced draws). pick(R) draws one kind. */
+const PARK_MIX = ['sedan', 'sedan', 'sedan', 'e34', 'suv', 'hatch', 'sedan', 'van', 'cab', 'coupe', 'muscle', 'sedan', 'sedan', 'e34', 'suv', 'hatch', 'sedan', 'sedan'];
 export function parkMix(ctx, mix = PARK_MIX) { const m = mix.map((k) => (ctx?.lite && k === 'muscle' ? 'sedan' : k)); return (R) => m[(R() * m.length) | 0]; }
 export function carSpec(kind) { return KINDS[kind]; }
 
@@ -411,6 +412,10 @@ export function carMaterials() {
   return MATS;
 }
 export const CAR_COLORS = [0x1a1a1c, 0x9a9ea3, 0x5f656b, 0x22305c, 0x6a1c1c, 0xb4b2ab, 0x33383c, 0x16181a, 0x7b8086, 0x1a4433, 0x4a4036, 0x2d4a55, 0xd8d6cf, 0x0f1e3a].map(c => new THREE.Color(c));
+// the sloyd sedan model is one merged, textured mesh (wheels and all): tinting it with the full CAR_COLORS hue range would
+// discolour the tyres, rims and glass along with the paint. A small near-neutral multiply palette instead, white to near
+// black, reads as red / maroon / silver / charcoal without shifting the baked texture's other materials off-hue.
+export const SLOYD_SEDAN_COLORS = [0xffffff, 0xd9d6ce, 0xaba79d, 0x6e6a63, 0x37332f].map(c => new THREE.Color(c));
 
 // phones: a parked row's tyres, dark trim and calipers become one vertex-coloured slot ('dark'), one draw call per kind per row
 // instead of three (~30 fewer in a street view). All three are near-black or tiny, so the shared roughness doesn't show.
@@ -442,13 +447,9 @@ export function placeCars(world, list, { raycast = true } = {}) {
   for (const c of list) { c.refs = []; if (c.color == null) c.color = null; reg.push(c); }
   for (const kind of CAR_KINDS) {
     const P = list.filter((c) => c.kind === kind); if (!P.length) continue;
-    if (hasCarModel(kind)) {   // a real model: one InstancedMesh per part
+    if (hasCarModel(kind) || kitModelPending(kind, ctx)) {   // a real model (or one on its way): the kit body far / until it loads, the model near
       const T = P.map((c) => m4.compose(p.set(c.x, c.y || 0, c.z), q.setFromAxisAngle(up, c.ry || 0), one).clone());
-      const cols = P.map((c) => { const col = c.color != null ? new THREE.Color(c.color) : new THREE.Color([0xb3120f, 0xe8b400, 0xf2f2f0, 0x111214, 0x1f4fb8, 0xb3120f][(Math.random() * 6) | 0]); c.color = col.getHex(); return col; });
-      const ims = instanceCarModel(kind, T, cols, scene) || [];
-      // LOD: the real model is ~450k triangles a car, so only the nearest few get it; the rest wear the kit's light body
-      const hi = ims.map((im) => ({ im, M: P.map((_, i) => { const a = new THREE.Matrix4(); im.getMatrixAt(i, a); return a; }) }));
-      for (const h of hi) h.im.count = Math.min(1, P.length);   // one instance until the first LOD pass: the boot pre-warm still compiles its shaders
+      const cols = P.map((c) => { const col = c.color != null ? new THREE.Color(c.color) : kind === 'coupe' ? new THREE.Color([0xb3120f, 0xe8b400, 0xf2f2f0, 0x111214, 0x1f4fb8, 0xb3120f][(Math.random() * 6) | 0]) : kind === 'cab' ? new THREE.Color(0xf2b820) : kind === 'sedan' ? SLOYD_SEDAN_COLORS[((R ? R() : Math.random()) * SLOYD_SEDAN_COLORS.length) | 0] : CAR_COLORS[((R ? R() : Math.random()) * CAR_COLORS.length) | 0]; c.color = col.getHex(); return col; });
       const G = parkedGeos(ctx, kind), lo = [];
       for (const slot of Object.keys(G)) { if (!G[slot]) continue;
         const im = new THREE.InstancedMesh(G[slot], slot === 'dark' ? darkMat() : CM[slot], P.length); im.name = `cars:${kind}:lo:${slot}`;
@@ -457,14 +458,21 @@ export function placeCars(world, list, { raycast = true } = {}) {
         im.castShadow = slot === 'paint'; im.receiveShadow = true; im.userData.surface = 'metal'; scene.add(im); lo.push(im);
         if (raycast && (slot === 'paint' || slot === 'glass')) ctx.raycastTargets.push(im); }
       P.forEach((c, i) => { for (const im of lo) c.refs.push({ im, i }); });
-      carLod(world, { P, T, cols, hi, lo, cur: '' });
+      const L = { P, T, cols, hi: [], lo, cur: '', hiShown: false };
+      // LOD: only the nearest few get the model (the Ferrari is ~450k triangles); the rest wear the kit's light body
+      const up2 = (k) => { if (k !== kind || L.hi.length) return; const ims = instanceCarModel(kind, T, cols, scene, lodMax(ctx)) || [];
+        L.hi = ims.map((im) => ({ im, per: im.userData.per || 1, W: im.userData.W || null, local: im.userData.local }));
+        for (const h of L.hi) h.im.count = Math.min(1, P.length) * h.per;   // one car until the first LOD pass: the boot pre-warm still compiles its shaders
+        L.cur = ''; };
+      if (hasCarModel(kind)) up2(kind); else onCarModel(up2);
+      carLod(world, L);
       continue;
     }
     const G = parkedGeos(ctx, kind);
     for (const slot of Object.keys(G)) {
       if (!G[slot]) continue;
       const im = new THREE.InstancedMesh(G[slot], slot === 'dark' ? darkMat() : CM[slot], P.length); im.name = `cars:${kind}:${slot}`;
-      P.forEach((c, i) => { q.setFromAxisAngle(up, c.ry || 0); p.set(c.x, c.y || 0, c.z); im.setMatrixAt(i, m4.compose(p, q, one)); c.refs.push({ im, i }); if (slot === 'paint') { const col = c.color != null ? new THREE.Color(c.color) : (kind === 'cab' ? new THREE.Color(0xf2b820) : CAR_COLORS[((R ? R() : Math.random()) * CAR_COLORS.length) | 0]); c.color = col.getHex(); im.setColorAt(i, col); } });
+      P.forEach((c, i) => { q.setFromAxisAngle(up, c.ry || 0); p.set(c.x, c.y || 0, c.z); im.setMatrixAt(i, m4.compose(p, q, one)); c.refs.push({ im, i }); if (slot === 'paint') { const col = c.color != null ? new THREE.Color(c.color) : (kind === 'cab' ? new THREE.Color(0xf2b820) : kind === 'sedan' ? SLOYD_SEDAN_COLORS[((R ? R() : Math.random()) * SLOYD_SEDAN_COLORS.length) | 0] : CAR_COLORS[((R ? R() : Math.random()) * CAR_COLORS.length) | 0]); c.color = col.getHex(); im.setColorAt(i, col); } });
       im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
       im.castShadow = slot === 'paint'; im.receiveShadow = true; im.userData.surface = 'metal'; scene.add(im);
       if (raycast && (slot === 'paint' || slot === 'glass')) ctx.raycastTargets.push(im);
@@ -474,18 +482,25 @@ export function placeCars(world, list, { raycast = true } = {}) {
 
 // parked real-model cars: every ~0.3 s the nearest few (in range) get the full model, packed into the first instances (count =
 // how many, hidden when none: a zero-count part still costs a draw call), and their light kit body is hidden; stolen ones (gone) get neither
-const LOD_ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
+const LOD_ZERO = new THREE.Matrix4().makeScale(0, 0, 0), _lm = new THREE.Matrix4();
+const lodMax = (ctx) => (ctx?.lite ? 5 : 12);   // parked cars that wear the full model at once
 function carLod(world, L) {
   const lists = world.carLods || (world.carLods = []); lists.push(L);
   if (lists.length > 1) return;
-  const ctx = world.ctx, R2 = (ctx.lite ? 30 : 45) ** 2, MAX = ctx.lite ? 5 : 12; let t = 0;
+  const ctx = world.ctx, R2 = (ctx.lite ? 30 : 45) ** 2, MAX = lodMax(ctx); let t = 0;
   world.updaters.push((dt) => {
     t -= dt; if (t > 0) return; t = 0.3; const cam = ctx.camera?.position; if (!cam) return;
     for (const L of world.carLods) {
       const near = []; L.P.forEach((c, i) => { if (c.gone) return; const d = (c.x - cam.x) ** 2 + (c.z - cam.z) ** 2; if (d < R2) near.push([d, i]); });
       near.sort((a, b) => a[0] - b[0]); const pick = near.slice(0, MAX).map((n) => n[1]), key = pick.join(',') + '|' + L.P.filter((c) => c.gone).length;
-      if (key === L.cur) continue; L.cur = key; const set = new Set(pick);
-      for (const h of L.hi) { pick.forEach((i, j) => { h.im.setMatrixAt(j, h.M[i]); if (h.im.instanceColor) h.im.setColorAt(j, L.cols[i]); }); h.im.count = pick.length; h.im.visible = pick.length > 0; h.im.instanceMatrix.needsUpdate = true; if (h.im.instanceColor) h.im.instanceColor.needsUpdate = true; }
+      if (key === L.cur) continue; L.cur = key; const set = new Set(L.hi.length ? pick : []);   // no model yet: every car keeps its kit body
+      // the hi-tier (model) body is a shared InstancedMesh, not one mesh per car: it only needs to be in ctx.raycastTargets
+      // while it's actually showing a car (count > 0), else bullets at a near sedan's old spot would never reach it
+      const hiShown = L.hi.length > 0 && pick.length > 0;
+      if (hiShown && !L.hiShown) for (const h of L.hi) ctx.raycastTargets.push(h.im);
+      else if (!hiShown && L.hiShown) for (const h of L.hi) { const k = ctx.raycastTargets.indexOf(h.im); if (k > -1) ctx.raycastTargets.splice(k, 1); }
+      L.hiShown = hiShown;
+      for (const h of L.hi) { const n = h.per; pick.forEach((i, j) => { if (h.W) for (let k = 0; k < n; k++) h.im.setMatrixAt(j * n + k, _lm.multiplyMatrices(L.T[i], h.W[k])); else h.im.setMatrixAt(j, h.local ? _lm.multiplyMatrices(L.T[i], h.local) : L.T[i]); if (h.im.instanceColor) h.im.setColorAt(j, L.cols[i]); }); h.im.count = pick.length * n; h.im.visible = pick.length > 0; h.im.instanceMatrix.needsUpdate = true; if (h.im.instanceColor) h.im.instanceColor.needsUpdate = true; }
       for (const im of L.lo) { L.P.forEach((c, i) => im.setMatrixAt(i, c.gone || set.has(i) ? LOD_ZERO : L.T[i])); im.instanceMatrix.needsUpdate = true; im.boundingSphere = null; }
     }
   });

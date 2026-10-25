@@ -101,6 +101,7 @@ await A.close();
 // 30 MB with GC timing). Kept under PHONE_HEAP_MB so it can't creep back.
 const PHONE_HEAP_MB = 400, PHONE_PEAK_MB = 680;   // ratchet: 547-631 MB on fresh loads, 652 here after the desktop page, with the building meshes streamed to the GPU mid-build (was 690); target 500
 { const T = await page('?qa=1&map=coney&mode=chill&time=day&touch=1', 'phone', { touch: true }); await sleep(3000);
+  await T.evaluate(() => window.__game.carsSettled ? window.__game.carsSettled(15000) : null);   // the street-car model loads on idle; don't race it
   { const cdp = await T.context().newCDPSession(T); await cdp.send('HeapProfiler.collectGarbage'); await cdp.detach(); }
   const m = await T.evaluate(() => ({ heap: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, perf: { frameMs: +(+window.__ctx.perf.frameMs).toFixed(1), drawCalls: window.__ctx.perf.drawCalls, tris: window.__ctx.perf.triangles } }));
   report.phone = { load: T.loadS, ...m }; console.log('phone', JSON.stringify(report.phone));

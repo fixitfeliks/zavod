@@ -20,7 +20,7 @@ try {
   const want = arg('--kinds', null), kinds = want ? want.split(',') : await page.evaluate(() => window.__cars.kinds);
   const AZ = [...Array(8)].map((_, i) => i * Math.PI / 4), EL = [0.02, 0.25, 0.7];
   for (const kind of kinds) {
-    const modes = kind === 'bus' ? ['driven'] : ['parked', 'traffic', 'driven'];
+    const modes = kind === 'bus' ? ['driven'] : kind.endsWith('@model') ? ['parked'] : ['parked', 'traffic', 'driven'];   // street models: never driven
     for (const mode of modes) {
       const info = await page.evaluate(([k, m]) => window.__cars.setup(k, m), [kind, mode]);
       let worst = { clustered: 0 };

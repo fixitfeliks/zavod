@@ -17,6 +17,7 @@ import * as minimap from './minimap.js';
 import * as vr from './vr/vr.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { IOS } from './texclamp.js';
+import { kitModelsSettled } from './world/carmodels.js';
 
 // BVH-accelerated raycasts for every mesh (bullets, AI line of sight, impact FX). Merged map batches are 100k+ triangle
 // meshes whose bounding sphere covers the whole map, so an unaccelerated ray tested every triangle (14 fps with AI on the
@@ -300,5 +301,6 @@ window.__game = {
   killAll: () => ctx.ai?.qaKillAll?.(),
   timeScale: (s) => { ctx.time.scale = s; },
   quality: (q) => { ctx.settings.quality = q; ctx.bus.emit('quality', q); },
+  carsSettled: (timeoutMs) => kitModelsSettled(timeoutMs),   // qa/sweep.mjs: don't read phone memory while a street-car model is still loading
 };
 boot();

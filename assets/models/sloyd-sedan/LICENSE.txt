@@ -1,0 +1,11 @@
+CC BY 4.0 (Creative Commons Attribution 4.0 International)
+
+The source model was released by TopoSphere, generated with Sloyd, under CC BY 4.0:
+https://creativecommons.org/licenses/by/4.0/
+
+Required attribution:
+"A Red Mid-sized Four-door Sedan, 1990s To Early 2000s" by TopoSphere, generated with Sloyd,
+licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+
+The converted files in this folder (sloyd-sedan.glb, sloyd-sedan-lite.glb) carry the same licence
+and the same attribution requirement.

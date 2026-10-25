@@ -267,7 +267,7 @@ export function buildStreet(world) {
   W.stalls = stalls;
 
   // ---- cars parked along both kerbs of Surf Ave -----------------------------------------------------------------------------
-  const cars = [], KIND = parkMix(ctx, ['sedan', 'sedan', 'e34', 'suv', 'suv', 'hatch', 'van', 'coupe', 'muscle', 'e34', 'sedan', 'suv', 'hatch']), off = Math.min(laneOff(22, 1) + 3.5, 8.8);
+  const cars = [], KIND = parkMix(ctx, ['sedan', 'sedan', 'sedan', 'e34', 'suv', 'sedan', 'suv', 'hatch', 'van', 'sedan', 'coupe', 'muscle', 'e34', 'sedan', 'sedan']), off = Math.min(laneOff(22, 1) + 3.5, 8.8);   // the sedan is Surf Ave's primary car
   const mouths = OSM.r.filter((r) => r.w >= 6 && r.w < 20).flatMap((r) => [r.p[0], r.p[r.p.length - 1]]);
   for (const r of OSM.r) { const nep = r.w >= 14 && r.w < 20 && streetAt(r.p[0][0], r.p[0][1]) === 'neptune'; if (r.w < 20 && !nep) continue; const o = nep ? r.w / 2 - 1.3 : off;   // Surf Ave and Neptune Ave
     walkLine(r.p, 6.4, (x, z, ux, uz) => { for (const s of [1, -1]) {

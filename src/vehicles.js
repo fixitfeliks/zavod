@@ -14,7 +14,7 @@ import { buildJetski } from './vehicles/jetski.js';
 import { createWaterFX } from './vehicles/waterfx.js';
 import { BoxGrid, resolveCircle, rectBlocked, segmentHit } from './vehicles/collide.js';
 import { carGeometries, carMaterials, carSpec, carEye, carInterior, wheelGeometry, wheelLayout, caliperGeometry, hideParkedCar, dropParkedCarBoxes, carBoxes, gaugeNeedle } from './world/carkit.js';
-import { hasCarModel, carModel } from './world/carmodels.js';
+import { hasCarModel, carModel, isKitModel } from './world/carmodels.js';
 import { buildBus, BUS } from './vehicles/bus.js';
 import { BRI } from './world/coney/brighton.js';
 import { kit as hangkitKit } from './world/hangkit.js';
@@ -192,7 +192,7 @@ function makeCar(x, z, yaw, kind = 'sedan', color = 0x22305c, yRef = 0, wantPane
   const mat = { paint, lampR, lampW, glass: (CM.glassSee || CM.glass).clone() };   // see-through: the cabin (and whoever's in it) shows
   let tyreR = 0.33, cab, wheels = null, busKit = null, panels = null, panes = null, geos = null, bodyMesh = null;
   if (kind === 'bus') { const B = buildBus({ sign: 'NOT IN SERVICE', lite: !!C.lite }); busKit = B; kit.add(B.group); for (const m of B.meshes) if (m.parent !== B.interior) meshes.push(m); cab = { wheel: new THREE.Group() }; }
-  else if (hasCarModel(kind)) { const mdl = carModel(kind, color); kit.add(mdl); mdl.traverse((o) => { if (o.isMesh && o.name !== 'aoShadow') meshes.push(o); }); cab = { wheel: new THREE.Group() }; }   // a real model (with its own cabin)
+  else if (hasCarModel(kind) && !isKitModel(kind)) { const mdl = carModel(kind, color); kit.add(mdl); mdl.traverse((o) => { if (o.isMesh && o.name !== 'aoShadow') meshes.push(o); }); cab = { wheel: new THREE.Group() }; }   // a real model (with its own cabin); the street models (KIT) go live as the carkit build, panels and all
   else { const kitG = carGeometries(kind, { wheels: false, panels: wantPanels }), panelGeos = kitG.panels || {}; geos = kitG.geos;
     bodyMesh = {};
     for (const [slot, g] of Object.entries(geos)) { if (!g) continue; const m = new THREE.Mesh(g, mat[slot] || CM[slot]); m.castShadow = slot === 'paint'; m.receiveShadow = true; m.userData.surface = 'metal'; if (slot === 'glass') m.userData.noDent = true; kit.add(m); meshes.push(m); if (slot === 'paint' || slot === 'glass') bodyMesh[slot] = m; }

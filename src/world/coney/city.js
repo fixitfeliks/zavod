@@ -75,7 +75,7 @@ export function buildCity(world, M, toGPU = () => 0) {
   streetKit(world, M);
 
   // ---- parked cars along the residential streets and in the lots ------------------------------------------------------
-  const cars = [], PARK = parkMix(world.ctx), LOT = parkMix(world.ctx, ['sedan', 'suv', 'hatch', 'van', 'muscle', 'coupe', 'e34']);
+  const cars = [], PARK = parkMix(world.ctx), LOT = parkMix(world.ctx, ['sedan', 'sedan', 'suv', 'sedan', 'hatch', 'van', 'sedan', 'muscle', 'coupe', 'e34', 'sedan']);   // the sedan is the lots' primary car too
   for (const r of OSM.r) { if (r.w < 9 || r.w > 16) continue; walk(r.p, 6.5, (x, z, dx, dz) => { if (R() < 0.6) return; if (BUS_STOPS.some((b) => Math.hypot(b[1] - x, b[2] - z) < 18)) return; if (!(x > PLAY.x0 && x < PLAY.x1 && z > PLAY.z0 && z < BW.z0 - 5)) return; for (const s of [-1, 1]) { if (R() < 0.4) continue; const off = r.w / 2 - 1.3, c = { x: x - dz * s * off, z: z + dx * s * off, ry: Math.atan2(dx, dz) - Math.PI / 2 + (s > 0 ? 0 : Math.PI), kind: PARK(R) }; if (!cars.some((o) => carsOverlap(o, c))) cars.push(c); } }); }   // two streets meeting (or one OSM way drawn twice) put kerb cars 2.4 m apart
   const w8 = new Set(w8Lots());   // the W 8 St lots round the DMV and the firehouse (coney/realism.js): busy, even outside PLAY
   for (const p of OSM.l) { const q = bbox(p), isW8 = w8.has(p), inPlay = q.x1 > PLAY.x0 && q.x0 < PLAY.x1 && q.z1 > PLAY.z0 && q.z0 < PLAY.z1, inS1Lot = !isW8 && !inPlay && q.x1 > S1.x0 && q.x0 < S1.x1 && q.z1 > S1.z0 && q.z0 < S1.z1, busy = isW8 || inS1Lot;   // inS1Lot: only lots main skipped (a lot that reaches into PLAY keeps world.R)
