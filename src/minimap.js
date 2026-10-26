@@ -30,13 +30,17 @@ export function init(ctx) {
     mini.style.display = state === 'playing' && M.img ? 'block' : 'none';
     if (state === 'playing' && !M.img && !M.pending) { M.pending = true; setTimeout(async () => { try { await snapshot(); } catch (e) { console.warn('[map] snapshot', e); } M.pending = false; mini.style.display = ctx.state === 'playing' ? 'block' : 'none'; }, 1500); }
   });
-  return { toggle, get open() { return M.open; }, snapshot: () => snapshot(), qa: () => ({ img: !!M.img, w: M.img?.width, h: M.img?.height }) };
+  return { toggle, get open() { return M.open; }, snapshot: () => snapshot(), qa: () => ({ img: !!M.img, w: M.img?.width, h: M.img?.height }),
+    plan: () => ({ url: M.img.toDataURL('image/webp', PLAN_QUALITY), b: M.map.b }) };   // tools/maplab-release.mjs bakes this into W.mapImage
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // the background: the world from above
 async function snapshot() {
   const { ctx } = M; const W = ctx.world, b = W?.bounds; if (!b) return;
+  // a map with a pre-rendered plan (W.mapImage: { src, b: frame bounds }) ships it instead of streaming the whole map to shoot it
+  if (W.mapImage) { const img = new Image(); img.crossOrigin = 'anonymous'; img.src = W.mapImage.src; await img.decode();
+    M.map = planFrame(W.mapImage.b, img.naturalWidth, img.naturalHeight); M.levels = null; M.imgs = { all: img }; M.img = img; return; }
   // multi-level interiors (W.mapLevels, else the wave floor levels): one cutaway floor plan per level; everything else one view
   const levels = Array.isArray(W.mapLevels) ? W.mapLevels : (Array.isArray(W.waveTuning?.levels) && W.waveTuning.levels.length > 1 ? W.waveTuning.levels : null);
   const sorted = levels ? levels.slice().sort((a, c) => c - a) : null, imgs = {};
@@ -44,6 +48,7 @@ async function snapshot() {
   M.levels = sorted; M.imgs = imgs; M.img = sorted ? imgs[sorted[0]] : imgs.all;
   console.log('[map] snapshot', M.map.RW, 'x', M.map.RH, M.levels ? 'levels ' + M.levels.join(',') : '');
 }
+const PLAN_QUALITY = 0.9;   // webp quality of a baked plan
 // half float bits -> linear value, built once (the per-pixel decode + tone curve used to take ~1 s of main thread)
 let F16 = null;
 const f16table = () => { if (F16) return F16; F16 = new Float32Array(65536); for (let h = 0; h < 65536; h++) { const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff; F16[h] = e === 0 ? s * Math.pow(2, -14) * (m / 1024) : e === 31 ? 0 : s * Math.pow(2, e - 15) * (1 + m / 1024); } return F16; };
@@ -57,11 +62,11 @@ async function shoot(clipY) {
   for (const q of W.mapPOIs || []) { b.min.x = Math.min(b.min.x, q.x - 30); b.max.x = Math.max(b.max.x, q.x + 30); b.min.z = Math.min(b.min.z, q.z - 30); b.max.z = Math.max(b.max.z, q.z + 30); }
   b.min.x -= 60; b.min.z -= 60; b.max.x += 60; b.max.z += 60;
   const w = b.max.x - b.min.x, d = b.max.z - b.min.z, cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
-  const res = ctx.isTouch ? 1024 : 2048, RW = w >= d ? res : Math.round(res * w / d), RH = w >= d ? Math.round(res * d / w) : res;
+  const res = ctx.isTouch ? 1024 : 2048, RW = w >= d ? res : Math.round(res * w / d), RH = w >= d ? Math.round(res * d / w) : res, frame = planFrame(b, RW, RH);
   // from straight above; on a multi-level map the camera sits at the cut height so the near plane removes the floors above
   const top = clipY != null ? clipY : 1500, cam = new THREE.OrthographicCamera(-w / 2, w / 2, d / 2, -d / 2, clipY != null ? 0.001 : 1, top + 2500);
   cam.position.set(cx, top, cz); cam.up.set(0, 0, -1); cam.lookAt(cx, top - 1, cz); cam.updateMatrixWorld(true);
-  const scene = ctx.scene, R = ctx.renderer, hidden = [], lit = new Set();
+  const scene = W.mapSnapshotScene || ctx.scene, R = ctx.renderer, hidden = [], lit = new Set();
   scene.traverse((o) => { if (o.isLight) for (let p = o; p; p = p.parent) lit.add(p); });
   const hide = (o) => { if (!lit.has(o)) { hidden.push(o); o.visible = false; return; } o.traverse((x) => { if (x.visible && (x.isMesh || x.isPoints || x.isSprite || x.isLine)) { hidden.push(x); x.visible = false; } }); };
   scene.traverse((o) => { if (o === scene || !o.visible) return; const n = o.name || '';
@@ -88,12 +93,14 @@ async function shoot(clipY) {
   g.globalCompositeOperation = 'saturation'; g.fillStyle = 'rgba(128,128,128,0.35)'; g.fillRect(0, 0, RW, RH); g.globalCompositeOperation = 'source-over';
   g.fillStyle = 'rgba(8,12,18,0.22)'; g.fillRect(0, 0, RW, RH);
   // crisp streets on top
-  const px = (x) => (x - b.min.x) / w * RW, pz = (z) => (z - b.min.z) / d * RH, sc = RW / w;
+  const { px, pz } = frame, sc = RW / w;
   if (Array.isArray(W.mapRoads)) { g.lineCap = g.lineJoin = 'round';
     for (const pass of [0, 1]) for (const r of W.mapRoads) { if (!r.p?.length) continue; g.beginPath(); r.p.forEach(([x, z], i) => (i ? g.lineTo(px(x), pz(z)) : g.moveTo(px(x), pz(z)))); g.lineWidth = Math.max(1.2, (r.w || 8) * sc) + (pass ? 0 : 2.5 * sc); g.strokeStyle = pass ? 'rgba(214,218,222,0.78)' : 'rgba(20,24,30,0.55)'; g.stroke(); } }
-  M.map = { b, w, d, RW, RH, px, pz };
+  M.map = frame;
   return c;
 }
+/** world → plan pixel mapping for a plan of RW x RH pixels covering bounds b (x, z) */
+function planFrame(b, RW, RH) { const w = b.max.x - b.min.x, d = b.max.z - b.min.z; return { b, w, d, RW, RH, px: (x) => (x - b.min.x) / w * RW, pz: (z) => (z - b.min.z) / d * RH }; }
 /** the floor plan for where the player is (multi-level maps) */
 function levelOf(y) { if (!M.levels) return null; let best = M.levels[M.levels.length - 1]; for (const L of M.levels) if (y >= L - 1.5) { best = L; break; } return best; }
 function pickImg() { const y = M.ctx.player?.position?.y ?? 0; const L = levelOf(y); M.level = L; M.img = L == null ? M.imgs.all : M.imgs[L]; }

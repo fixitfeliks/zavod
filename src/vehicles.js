@@ -420,7 +420,7 @@ function showViewmodel(on) {
 function surfaceUnder(v) {
   const W = C.world; let s = 'concrete';
   try { s = W?.surfaceAt?.(v.pos) || s; } catch {}
-  if (s === 'sand' || (s === 'ground' && W?.mapId === 'coney')) return SURF.sand;   // coney: 'ground' = the beach
+  if (s === 'sand' || s === 'water' || (s === 'ground' && W?.mapId === 'coney')) return SURF.sand;   // coney: 'ground' = the beach; water: wading (world/maps/maplab.js)
   if (s === 'grass' || s === 'lawn' || s === 'dirt' || s === 'mud' || s === 'gravel') return SURF.soft;
   return SURF.hard;
 }
@@ -582,6 +582,9 @@ function stepVeh(v, dt, thr, brk, hard, steer) {
   for (let i = 0; i < sp.circles.length; i++) {
     const az = sp.circles[i]; const ax = px - _f.x * az, azz = pz - _f.z * az;
     if (resolveCircle(S.grid, ax, azz, sp.bodyR, y0, y1, v.box, _res)) { px += _res.x - ax; pz += _res.z - azz; if (!hitN || _res.depth > hitN.depth) hitN = { nx: _res.nx, nz: _res.nz, depth: _res.depth, box: _res.box, px: _res.x - _res.nx * sp.bodyR, pz: _res.z - _res.nz * sp.bodyR }; }
+    const mx = px - _f.x * az, mz = pz - _f.z * az;
+    const meshHit = C.meshCollision?.resolveVehicleCircle(mx, mz, sp.bodyR, y0, y1);   // maps built from real geometry (world/meshcollide.js)
+    if (meshHit) { px += meshHit.x - mx; pz += meshHit.z - mz; if (!hitN || meshHit.depth > hitN.depth) hitN = { ...meshHit, px: meshHit.x - meshHit.nx * sp.bodyR, pz: meshHit.z - meshHit.nz * sp.bodyR }; }
   }
   if (hitN) {
     const vn = vel.x * hitN.nx + vel.z * hitN.nz;
@@ -971,6 +974,7 @@ export async function init(ctx) {
     qaWindow(name, b = S.mounted) { return toggleWindow(b, name || driverPane(b)); },
     qaWindowOpen(name, b = S.mounted) { return windowOpen(b, name || driverPane(b)); },
     qaSwingDoor(name, b = S.mounted) { return swingDoor(b, name || driverDoor(b)); },
+    dismount: () => dismount(),
     spawnCar: (x, z, yaw, kind, color, y, panels) => makeCar(x, z, yaw, kind, color, y ?? ctx.player?.position.y ?? 0, panels ?? true),
     qaSpawn(x, z, yaw = 0, y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeBike(x, z, yaw, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },
     qaSpawnEbike(x, z, yaw = 0, variant = 'citibike', y = ctx.player?.position.y ?? 0) { S.grid.sync(ctx.colliders); const b = makeEbike(x, z, yaw, variant, y); S.grid.build(ctx.colliders); ctx.player?.rebuildColliders?.(); return b; },

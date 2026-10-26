@@ -56,13 +56,13 @@ export const kit = () => V;
 
 /**
  * @param world  map world
- * @param o.cash starting cash · o.help controls-card html · o.title card title · o.respawn { label, at: () => [x, y, z, yaw] }
+ * @param o.cash starting cash · o.inventory starting items · o.help controls-card html · o.title card title · o.respawn { label, at: () => [x, y, z, yaw] }
  */
 export function buildKit(world, o = {}) {
   const { ctx } = world;
-  V = { world, ctx, cash: o.cash ?? 20, startCash: o.cash ?? 20, inv: ['bic', 'cigs', 'drone', 'drone'], drunk: 0, drunkT: -1, high: 0, highT: -1, smokeT: 0, puffT: 0, puffs: [], riding: null, passenger: null,
+  V = { world, ctx, cash: o.cash ?? 20, startCash: o.cash ?? 20, startInv: o.inventory || ['bic', 'cigs', 'drone', 'drone'], inv: [], drunk: 0, drunkT: -1, high: 0, highT: -1, smokeT: 0, puffT: 0, puffs: [], riding: null, passenger: null,
     shafts: [], spots: [], vendors: [], hurtables: [], drops: [], dialog: null, promptT: 0, lastPrompt: '', respawn: o.respawn || null, respawnPick: false, talked: new Set(), onUpdate: [] };
-  buildUI(o); buildPuffs();
+  V.inv.push(...V.startInv); buildUI(o); buildPuffs();
   if (!ctx.__hangkitBound) { ctx.__hangkitBound = true; bindOnce(ctx); }
   world.updaters.push((dt) => { if (V?.world === world) update(dt); });
   import('./charselect.js').then((m) => m.mountCharSelect(world.ctx || V.ctx)).catch((e) => console.warn('[hangkit] charselect', e));
@@ -151,7 +151,7 @@ function bindOnce(ctx) {
   ctx.bus.on('net:fresh', (m) => { if (!V) return; V.ctx.hud?.toast?.(`${V.ctx.net?.peer?.(m.f)?.name || 'A friend'} started everyone fresh`, 2400); V.ctx.bus.emit('worldReset', { by: m.f }); });
   ctx.bus.on('worldReset', () => {
     if (!V) return; const { ctx } = V; closeDialog();
-    V.cash = V.startCash; V.inv.length = 0; V.inv.push('bic', 'cigs', 'drone', 'drone', ...(V.starter || [])); V.drunk = 0; V.drunkT = -1; V.high = 0; V.highT = -1; V.magicT = 0; V.tripT = 0; V.rushT = 0; if (V.ctx?.player) V.ctx.player.rush = 0; endTrip(); V.status = {}; V.iceT = null; V.cigLeft = 0; V.left = {}; renderCash();
+    V.cash = V.startCash; V.inv.length = 0; V.inv.push(...V.startInv, ...(V.starter || [])); V.drunk = 0; V.drunkT = -1; V.high = 0; V.highT = -1; V.magicT = 0; V.tripT = 0; V.rushT = 0; if (V.ctx?.player) V.ctx.player.rush = 0; endTrip(); V.status = {}; V.iceT = null; V.cigLeft = 0; V.left = {}; renderCash();
     for (const H of V.hurtables) { H.down = false; H.hp = 100; H.k = 0; const b = H.fig.body || H.fig.group; b.rotation.x = 0; if (H.o.vendor) H.o.vendor.off = false; }
     for (const d of V.drops || []) { try { V.world.scene.remove(d.g || d.mesh || d); } catch {} } if (V.drops) V.drops.length = 0;
     for (const m of V.puddles || []) m.visible = false;

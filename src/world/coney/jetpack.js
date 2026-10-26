@@ -15,8 +15,8 @@ export function buildJetpacks(world) {
   J = { ctx, packs: [], worn: null, fuel: 100, bar: null, spool: 0, flames: flameFx(world), remote: new Map(), sendT: 0, sentOn: null };
   const yaw = Math.atan2(T.seat.x - T.pos.x, T.seat.z - T.pos.z), up = new THREE.Vector3(0, 1, 0);
   for (const [lx, lz] of RACK) {
-    const pos = new THREE.Vector3(lx, 0, lz).applyAxisAngle(up, yaw).add(T.pos).setY(0);
-    const g = model(); g.position.copy(pos).setY(0.02); g.rotation.y = yaw; world.scene.add(g);
+    const pos = new THREE.Vector3(lx, 0, lz).applyAxisAngle(up, yaw).add(T.pos);
+    const g = model(); g.position.copy(pos).add(new THREE.Vector3(0, 0.02, 0)); g.rotation.y = yaw; world.scene.add(g);
     const pk = { g, pos, home: pos.clone() }; J.packs.push(pk);
     K.spot({ pos, r: 1.8, when: () => !J.worn && pk.g.visible, prompt: 'F — STRAP ON THE JET PACK', act: () => wear(pk) });
   }
@@ -28,7 +28,7 @@ export function buildJetpacks(world) {
     b.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); if (J.worn && ctx.state === 'playing') takeOff(); }, { passive: false }); b.addEventListener('click', () => { if (J.worn) takeOff(); }); bar.appendChild(b); J.offBtn = b; }
   addEventListener('keydown', (e) => { if (e.code === 'KeyX' && J.worn && ctx.state === 'playing') takeOff(); });
   ctx.bus.on('playerDied', () => { if (J.worn) takeOff(); });
-  ctx.bus.on('worldReset', () => { if (J.worn) takeOff(); for (const p of J.packs) { p.g.visible = true; p.g.position.copy(p.home).setY(0.02); } });
+  ctx.bus.on('worldReset', () => { if (J.worn) takeOff(); for (const p of J.packs) { p.g.visible = true; p.g.position.copy(p.home).add(new THREE.Vector3(0, 0.02, 0)); } });
   K.onUpdate((dt, playing) => update(dt, playing));
   ctx.bus.on('net:jet', (m) => { if (!m || !/^[a-z0-9]{8}$/.test(m.f || '')) return; let R = J.remote.get(m.f); const w = remoteWrap(m.f);
     if (m.on && w && !R) { const g = model(); g.scale.setScalar(0.72); g.position.set(0, 0.55, -0.24); w.add(g); const fl = flameCone(); fl.position.set(0, 0.28, -0.24); w.add(fl); R = { g, fl, w }; J.remote.set(m.f, R); }
@@ -53,7 +53,7 @@ function roar(level) {   // filtered-noise engine roar, level 0..1 (on the game'
     if (AC.state === 'suspended') AC.resume(); const S = J.ctx.settings || {}; NG.gain.value = J.ctx.audio?.muted ? 0 : 0.22 * level * (S.masterVolume ?? 1) * (S.sfxVolume ?? 1); NF.frequency.value = 400 + 1800 * level; } catch {}
 }
 function wear(pk) { if (J.worn) return; J.worn = pk; pk.g.visible = false; J.fuel = 100; J.bar.style.display = 'block'; J.ctx.hud?.toast?.(J.ctx.isTouch ? 'Jet pack on. Hold JUMP to fly · TAKE OFF up top' : 'Jet pack on. Hold SPACE to fly · X to take it off', 2400); }
-function takeOff() { const pk = J.worn; if (!pk) return; J.worn = null; J.ctx.player.jet = null; J.spool = 0; J.flames.visible = false; roar(0); J.ctx.net?.send?.('jet', { on: 0 }); J.sentOn = 0; J.bar.style.display = 'none'; pk.g.visible = true; pk.g.position.copy(pk.home).setY(0.02); }
+function takeOff() { const pk = J.worn; if (!pk) return; J.worn = null; J.ctx.player.jet = null; J.spool = 0; J.flames.visible = false; roar(0); J.ctx.net?.send?.('jet', { on: 0 }); J.sentOn = 0; J.bar.style.display = 'none'; pk.g.visible = true; pk.g.position.copy(pk.home).add(new THREE.Vector3(0, 0.02, 0)); }
 function update(dt, playing) {
   if (!J.worn) return; const p = J.ctx.player, inp = J.ctx.input;
   const hold = playing && !p.mounted && (inp?.keys?.has?.('Space') || false);

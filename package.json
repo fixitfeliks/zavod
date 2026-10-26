@@ -19,6 +19,8 @@
   "scripts": {
     "serve": "./qa/serve.sh",
     "test:review": "node qa/review-test.mjs",
+    "test:maplab": "xvfb-run -a -s '-screen 0 1600x1200x24' env QA_VIRTUAL_DISPLAY=1 node qa/map-lab-game-test.mjs",
+    "release:maplab": "xvfb-run -a -s '-screen 0 1600x1200x24' env QA_VIRTUAL_DISPLAY=1 node tools/maplab-release.mjs",
     "test:benchmark-isolation": "node --experimental-vm-modules qa/map-lab/tests/benchmark-isolation-test.mjs",
     "benchmark:overhead": "node qa/map-lab/tests/benchmark-overhead.mjs",
     "test": "for t in chill crews deli locals fight jobs guns fun; do node qa/$t-test.mjs || exit 1; done"

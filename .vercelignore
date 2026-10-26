@@ -6,3 +6,4 @@ qa/refs/
 qa/critic/
 qa/map-lab/tests/fixtures/
 .git
+assets/maps/map-lab/

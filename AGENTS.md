@@ -1,8 +1,8 @@
 # AGENTS.md — working on ZAVOD (for Codex / Claude / any coding agent)
 
 Browser FPS in plain Three.js r186 (vendored in `vendor/`, ES modules + importmap, **no build step**).
-`main` auto-deploys to https://zavod-chi.vercel.app — **work on a branch and open a PR** (Vercel posts a preview URL on
-every PR); don't push straight to `main` while people are playing.
+`main` auto-deploys to https://zavod-chi.vercel.app — **work on a branch and open a PR**; other branches are not deployed
+(`vercel.json`), so test locally. Don't push straight to `main` while people are playing.
 
 ## Run
 ```
@@ -26,6 +26,9 @@ Useful URLs: `?map=coney` · `?map=coney&mode=chill` · `?qa=1` (exposes `window
   - `locals.js` — POPS cart ally, SHADES, NET GOST market, the mangal · `jobs.js` — Igor's side jobs
   - `chase.js` — wanted level / cops · `stillwell.js`, `w8th.js` — subway stations · `housing.js` — Luna Park towers
   - `belt.js` — elevated Belt Pkwy loop over Brighton / Sheepshead Bay · `radio.js` — Luna Park Radio
+- `src/world/maps/maplab.js` — Map Lab's released Coney survey map, streamed from Cloudflare Pages (`TILE_HOST`, too big for
+  git / Vercel). `npm run release:maplab -- <city> <output>` builds `assets/maps/map-lab/release/` from a local export
+  (gitignored) and bakes its minimap; `?tiles=local` streams that folder; `npm run test:maplab` checks it.
 - `src/world/hangkit.js` — shared hangout kit for every map: cash, inventory, vendors + dialog, spots (F), elevators,
   stealing cars, sharing booze/smoke. `src/world/deli.js` — figures (`buildFigure`, with fight/hands-up anims), delis.
 

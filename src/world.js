@@ -80,7 +80,7 @@ export async function init(ctx) {
 
   ctx.progress(0.12, `map: ${map.meta.name}`);
   if (['coney', 'wsp', 'sbu'].includes(mapId)) { try { await loadPeople(ctx); } catch (e) { console.warn('[world] people', e); } }
-  if (mapId === 'coney') { try { await loadCarModels(ctx); } catch (e) { console.warn('[world] car models', e); } }   // real GLB cars (world/carmodels.js)   // realistic NPCs (world/people.js)
+  if (mapId === 'coney' || mapId === 'maplab') { try { await loadCarModels(ctx); } catch (e) { console.warn('[world] car models', e); } }   // real GLB cars (world/carmodels.js)
   // maps built from files (Map Lab tiles, a stand-in GLB) load them first; the authored maps have no load() and build as before
   if (map.load) { try { await map.load(ctx, world); } catch (e) { console.error(`[world] ${mapId} load`, e); ctx.bootErrors = (ctx.bootErrors || []).concat(`map load: ${e.message}`); } }
   await map.build(world);   // coney builds in steps (async), the rest at once
